@@ -11,9 +11,6 @@ from torch_geometric.data import Batch
 from data import fen_to_graph
 from model import ChessGATv2
 
-# Dummy WDL target — not used during inference, just satisfies fen_to_graph signature
-_DUMMY_WDL = (0.0, 0.0, 0.0)
-
 
 def get_device():
     if torch.cuda.is_available():
@@ -40,9 +37,9 @@ def evaluate_position(model, device, fen):
     Evaluate a single position. Returns WDL probabilities from the
     perspective of the side to move.
     """
-    graph = fen_to_graph(fen, _DUMMY_WDL)
+    graph = fen_to_graph(fen)
     batch = Batch.from_data_list([graph]).to(device)
-    logits = model(batch)
+    logits, _ = model(batch)
     probs = F.softmax(logits, dim=1)[0]
     return {
         "win": probs[0].item(),
@@ -74,12 +71,12 @@ def get_best_move(model, device, board, top_k=5):
     for move in legal_moves:
         b = board.copy()
         b.push(move)
-        graph = fen_to_graph(b.fen(), _DUMMY_WDL)
+        graph = fen_to_graph(b.fen())
         graphs.append(graph)
 
     # Batch inference
     batch = Batch.from_data_list(graphs).to(device)
-    logits = model(batch)
+    logits, _ = model(batch)
     probs = F.softmax(logits, dim=1)  # [num_moves, 3]
 
     # Value from opponent's perspective, negated = value for us

@@ -45,7 +45,12 @@ def cp_to_wdl(cp):
     return (win / total, draw / total, loss / total)
 
 
-def fen_to_graph(fen, wdl):
+EDGE_DIM = 10  # capture, promotion, castling, en_passant, dx, dy, promo_Q, promo_R, promo_B, promo_N
+
+PROMO_MAP = {chess.QUEEN: 0, chess.ROOK: 1, chess.BISHOP: 2, chess.KNIGHT: 3}
+
+
+def fen_to_graph(fen, wdl=None):
     """
     Convert a FEN string to a PyG Data object.
 
@@ -58,9 +63,10 @@ def fen_to_graph(fen, wdl):
       - Castling rights (4d, broadcast)
       - Half-move clock (1d, normalized, broadcast)
 
-    Edge features (6d per legal move):
+    Edge features (10d per legal move):
       - is_capture, is_promotion, is_castling, is_en_passant
       - dx, dy (file/rank displacement, normalized by 7)
+      - promotion type one-hot (4d: queen, rook, bishop, knight)
     """
     board = chess.Board(fen)
 
@@ -104,6 +110,7 @@ def fen_to_graph(fen, wdl):
     # --- Build edges from legal moves ---
     src, dst = [], []
     edge_attrs = []
+    move_uci = []
 
     for move in board.legal_moves:
         from_sq = move.from_square
@@ -111,31 +118,40 @@ def fen_to_graph(fen, wdl):
 
         src.append(from_sq)
         dst.append(to_sq)
+        move_uci.append(move.uci())
 
         dx = (chess.square_file(to_sq) - chess.square_file(from_sq)) / 7.0
         dy = (chess.square_rank(to_sq) - chess.square_rank(from_sq)) / 7.0
+
+        promo = [0.0, 0.0, 0.0, 0.0]
+        if move.promotion is not None:
+            promo[PROMO_MAP[move.promotion]] = 1.0
 
         edge_attrs.append([
             float(board.is_capture(move)),
             float(move.promotion is not None),
             float(board.is_castling(move)),
             float(board.is_en_passant(move)),
-            dx,
-            dy,
+            dx, dy,
+            *promo,
         ])
 
     # Handle positions with no legal moves (checkmate/stalemate)
     if len(src) == 0:
         edge_index = torch.zeros((2, 0), dtype=torch.long)
-        edge_attr = torch.zeros((0, 6), dtype=torch.float)
+        edge_attr = torch.zeros((0, EDGE_DIM), dtype=torch.float)
     else:
         edge_index = torch.tensor([src, dst], dtype=torch.long)
         edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
 
     x = torch.tensor(node_features, dtype=torch.float)
-    y = torch.tensor(wdl, dtype=torch.float)
 
-    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
+    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+    data.move_uci = move_uci  # list of UCI strings, one per edge
+    if wdl is not None:
+        data.y = torch.tensor(wdl, dtype=torch.float)
+
+    return data
 
 
 def load_and_sample(csv_path, num_samples=None, random_state=42):

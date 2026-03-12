@@ -363,7 +363,7 @@ function initBoard() {
     boardObj = Chessboard('board', {
         position: 'start',
         draggable: true,
-        pieceTheme: 'https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/img/chesspieces/wikipedia/{piece}.png',
+        pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
         onDrop: onDrop,
         onDragStart: onDragStart,
     });

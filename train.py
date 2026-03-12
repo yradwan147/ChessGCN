@@ -63,7 +63,7 @@ def train_epoch(model, loader, optimizer, device):
         batch = batch.to(device)
         optimizer.zero_grad()
 
-        logits = model(batch)
+        logits, _ = model(batch)
         target = batch.y.view(-1, 3)
 
         # KL divergence loss (soft WDL targets)
@@ -98,7 +98,7 @@ def evaluate(model, loader, device):
 
     for batch in loader:
         batch = batch.to(device)
-        logits = model(batch)
+        logits, _ = model(batch)
         target = batch.y.view(-1, 3)
 
         log_probs = F.log_softmax(logits, dim=1)
