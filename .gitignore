@@ -1,0 +1,21 @@
+# Data
+dataset_eval.csv
+*.pt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Output artifacts
+*.png
+
+# Environment
+.env
+.venv/
+
+# OS
+.DS_Store
