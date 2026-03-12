@@ -298,8 +298,9 @@ def pretrain_policy_head(args, device):
         load_v1_checkpoint(model, args.checkpoint, device)
         log.info(f"Loaded value-head checkpoint: {args.checkpoint}")
 
-    # Build dataset with policy targets (stratified sampling)
-    log.info(f"Loading {args.pretrain_samples} samples from {args.pretrain_data}...")
+    # Build dataset with policy targets (stratified sampling if subsampling)
+    label = f"{args.pretrain_samples}" if args.pretrain_samples else "all"
+    log.info(f"Loading {label} samples from {args.pretrain_data}...")
     df = load_and_sample(args.pretrain_data, num_samples=args.pretrain_samples)
 
     graphs = []
@@ -567,7 +568,8 @@ def main():
                         help="Run supervised policy pretraining first")
     parser.add_argument("--pretrain-epochs", type=int, default=10)
     parser.add_argument("--pretrain-data", type=str, default="dataset_eval.csv")
-    parser.add_argument("--pretrain-samples", type=int, default=50_000)
+    parser.add_argument("--pretrain-samples", type=int, default=None,
+                        help="Number of samples for policy pretraining (None = full dataset)")
 
     args = parser.parse_args()
     device = get_device()
