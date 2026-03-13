@@ -249,7 +249,7 @@ def train_on_buffer(model, replay_buffer, optimizer, device,
 # ── Evaluation: challenger vs best model ─────────────────────────────────────
 
 def evaluate_models(challenger, best_model, device,
-                    num_games=40, num_simulations=64):
+                    num_games=40, num_simulations=64, max_moves=200):
     """Play challenger vs best. Returns challenger win rate."""
     challenger.eval()
     best_model.eval()
@@ -264,7 +264,7 @@ def evaluate_models(challenger, best_model, device,
         black_mcts = b_mcts if challenger_is_white else c_mcts
 
         board = chess.Board()
-        for _ in range(512):
+        for _ in range(max_moves):
             if board.is_game_over(claim_draw=True):
                 break
             current = white_mcts if board.turn == chess.WHITE else black_mcts
@@ -467,7 +467,7 @@ def selfplay_main(args, model=None):
         for g in range(args.games_per_iter):
             resign_on = random.random() > 0.2  # 80% with resign, 20% without
             game_data, game_record, result = play_one_game(
-                mcts_engine, resign_enabled=resign_on,
+                mcts_engine, max_moves=args.max_moves, resign_enabled=resign_on,
             )
             add_game_to_buffer(game_data, result, replay_buffer)
             positions_added += len(game_data)
@@ -495,14 +495,20 @@ def selfplay_main(args, model=None):
         log.info(f"  Self-play done: {positions_added} positions from "
                  f"{args.games_per_iter} games ({outcomes})")
 
-        # ── Phase 2: Training ──
+        # ── Phase 2: Training (scale steps to avoid overfitting on small buffer) ──
+        actual_steps = min(args.train_steps, len(replay_buffer) // args.batch_size)
         model.train()
         losses = train_on_buffer(
             model, replay_buffer, optimizer, device,
-            batch_size=args.batch_size, num_batches=args.train_steps,
+            batch_size=args.batch_size, num_batches=actual_steps,
         )
-        log.info(f"  Training: value_loss={losses['value_loss']:.4f}, "
+        log.info(f"  Training ({actual_steps} steps): value_loss={losses['value_loss']:.4f}, "
                  f"policy_loss={losses['policy_loss']:.4f}")
+
+        # Save checkpoint every iteration (crash resilience)
+        torch.save(model.state_dict(), "selfplay_latest.pt")
+        if iteration % args.save_interval == 0:
+            torch.save(model.state_dict(), f"selfplay_iter{iteration}.pt")
 
         # ── Phase 3: Evaluation (every K iterations) ──
         if iteration % args.eval_interval == 0:
@@ -511,7 +517,8 @@ def selfplay_main(args, model=None):
             win_rate = evaluate_models(
                 model, best_model, device,
                 num_games=args.eval_games,
-                num_simulations=max(args.simulations // 2, 16),
+                num_simulations=args.eval_sims,
+                max_moves=args.max_moves,
             )
             log.info(f"  Challenger win rate: {win_rate:.1%}")
             if win_rate >= 0.55:
@@ -521,10 +528,6 @@ def selfplay_main(args, model=None):
                 torch.save(model.state_dict(), f"selfplay_best_iter{iteration}.pt")
             else:
                 log.info(f"  Keeping previous best model.")
-
-        # Periodic checkpoint
-        if iteration % args.save_interval == 0:
-            torch.save(model.state_dict(), f"selfplay_iter{iteration}.pt")
 
         elapsed = time.time() - iter_start
         log.info(f"  Iteration time: {elapsed:.0f}s")
@@ -549,6 +552,8 @@ def main():
     parser.add_argument("--iterations", type=int, default=100)
     parser.add_argument("--games-per-iter", type=int, default=50)
     parser.add_argument("--simulations", type=int, default=128)
+    parser.add_argument("--max-moves", type=int, default=200,
+                        help="Max half-moves per self-play game")
     parser.add_argument("--buffer-size", type=int, default=300_000)
 
     # Training
@@ -559,6 +564,8 @@ def main():
     # Evaluation
     parser.add_argument("--eval-interval", type=int, default=5)
     parser.add_argument("--eval-games", type=int, default=40)
+    parser.add_argument("--eval-sims", type=int, default=64,
+                        help="MCTS simulations for evaluation games")
     parser.add_argument("--save-interval", type=int, default=10)
     parser.add_argument("--games-file", type=str, default="selfplay_games.jsonl",
                         help="Path to save game records (JSON lines)")
