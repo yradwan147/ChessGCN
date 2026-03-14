@@ -20,6 +20,7 @@ from pathlib import Path
 
 import chess
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 from sklearn.model_selection import train_test_split
@@ -101,7 +102,8 @@ def per_graph_cross_entropy(logits, targets, batch_idx):
 # ── Self-play game generation ────────────────────────────────────────────────
 
 def play_one_game(mcts_engine, max_moves=512, temp_threshold=30,
-                  resign_threshold=-0.95, resign_enabled=True):
+                  resign_threshold=-0.95, resign_enabled=True,
+                  start_fen=None):
     """
     Play a single self-play game.
 
@@ -110,7 +112,7 @@ def play_one_game(mcts_engine, max_moves=512, temp_threshold=30,
         game_record: list of dicts with per-move info for game logging
         result: 1.0 (White wins), 0.0 (draw), -1.0 (Black wins)
     """
-    board = chess.Board()
+    board = chess.Board(start_fen) if start_fen else chess.Board()
     game_data = []
     game_record = []
 
@@ -212,13 +214,12 @@ def train_on_buffer(model, replay_buffer, optimizer, device,
 
         value_logits, policy_logits = model(batch)
 
-        # --- Value loss ---
+        # --- Value loss (logged only — value head is frozen) ---
         z = batch.value_target.view(-1)
-        target_wdl = torch.stack([
-            (z + 1) / 2,      # P(win)
-            1 - z.abs(),       # P(draw)
-            (1 - z) / 2,      # P(loss)
-        ], dim=1)
+        target_wdl = torch.zeros(z.size(0), 3, device=z.device)
+        target_wdl[:, 0] = (z == 1).float()    # win
+        target_wdl[:, 1] = (z == 0).float()    # draw
+        target_wdl[:, 2] = (z == -1).float()   # loss
         log_probs = F.log_softmax(value_logits, dim=1)
         value_loss = F.kl_div(log_probs, target_wdl, reduction="batchmean")
 
@@ -231,7 +232,7 @@ def train_on_buffer(model, replay_buffer, optimizer, device,
         else:
             policy_loss = torch.tensor(0.0, device=device)
 
-        loss = value_loss + policy_loss
+        loss = policy_loss  # value head is frozen; value_loss logged only
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -440,14 +441,38 @@ def selfplay_main(args, model=None):
     best_model = copy.deepcopy(model)
     best_model.eval()
     replay_buffer = ReplayBuffer(max_size=args.buffer_size)
-    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+
+    # Freeze value head — preserve supervised accuracy
+    for param in model.value_head.parameters():
+        param.requires_grad = False
+    log.info("Value head frozen (supervised weights preserved)")
+
+    # Policy-only optimizer with differential LR
+    backbone_params = [p for n, p in model.named_parameters()
+                       if "policy_mlp" not in n and "value_head" not in n and p.requires_grad]
+    policy_params = [p for n, p in model.named_parameters()
+                     if "policy_mlp" in n and p.requires_grad]
+    optimizer = AdamW([
+        {"params": backbone_params, "lr": args.lr * 0.1},
+        {"params": policy_params, "lr": args.lr},
+    ], weight_decay=1e-4)
+
+    # Build FEN pool for diverse starting positions
+    fen_pool = []
+    if Path(args.pretrain_data).exists():
+        fen_df = load_and_sample(args.pretrain_data, num_samples=None)
+        balanced = fen_df[fen_df["cp"].abs() < 500]
+        fen_pool = balanced["Position"].tolist()
+        if len(fen_pool) > 10_000:
+            fen_pool = random.sample(fen_pool, 10_000)
+        log.info(f"Built FEN pool: {len(fen_pool)} balanced positions for diverse starts")
 
     # Game log file (JSON lines format)
     games_file = Path(args.games_file)
     log.info(f"Saving games to {games_file}")
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    log.info(f"Model: {num_params:,} parameters (policy_head=True)")
+    log.info(f"Model: {num_params:,} trainable parameters (value head frozen)")
     log.info(f"Self-play: {args.iterations} iterations, {args.games_per_iter} games/iter, "
              f"{args.simulations} MCTS sims/move")
 
@@ -466,8 +491,13 @@ def selfplay_main(args, model=None):
 
         for g in range(args.games_per_iter):
             resign_on = random.random() > 0.2  # 80% with resign, 20% without
+            # 50% of games start from a random balanced position
+            start_fen = None
+            if fen_pool and random.random() < 0.5:
+                start_fen = random.choice(fen_pool)
             game_data, game_record, result = play_one_game(
                 mcts_engine, max_moves=args.max_moves, resign_enabled=resign_on,
+                start_fen=start_fen,
             )
             add_game_to_buffer(game_data, result, replay_buffer)
             positions_added += len(game_data)
@@ -549,9 +579,9 @@ def main():
     parser.add_argument("--checkpoint", type=str, default="best_model.pt")
 
     # Self-play
-    parser.add_argument("--iterations", type=int, default=100)
-    parser.add_argument("--games-per-iter", type=int, default=50)
-    parser.add_argument("--simulations", type=int, default=128)
+    parser.add_argument("--iterations", type=int, default=30)
+    parser.add_argument("--games-per-iter", type=int, default=5)
+    parser.add_argument("--simulations", type=int, default=64)
     parser.add_argument("--max-moves", type=int, default=200,
                         help="Max half-moves per self-play game")
     parser.add_argument("--buffer-size", type=int, default=300_000)
@@ -563,8 +593,8 @@ def main():
 
     # Evaluation
     parser.add_argument("--eval-interval", type=int, default=5)
-    parser.add_argument("--eval-games", type=int, default=40)
-    parser.add_argument("--eval-sims", type=int, default=64,
+    parser.add_argument("--eval-games", type=int, default=6)
+    parser.add_argument("--eval-sims", type=int, default=32,
                         help="MCTS simulations for evaluation games")
     parser.add_argument("--save-interval", type=int, default=10)
     parser.add_argument("--games-file", type=str, default="selfplay_games.jsonl",
