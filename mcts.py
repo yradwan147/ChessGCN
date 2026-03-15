@@ -84,7 +84,7 @@ class MCTS:
         fen = board.fen()
         graph = fen_to_graph(fen)
         batch = Batch.from_data_list([graph]).to(self.device)
-        value_logits, policy_logits = self.model(batch)
+        value_logits, policy_logits, *_ = self.model(batch)
 
         # Value: P(win) - P(loss)
         wdl = F.softmax(value_logits, dim=1)[0]

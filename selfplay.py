@@ -120,7 +120,11 @@ def play_one_game(mcts_engine, max_moves=512, temp_threshold=30,
         if board.is_game_over(claim_draw=True):
             break
 
-        temperature = 1.0 if move_num < temp_threshold else 0.01
+        # Smooth temperature annealing: 1.0 → 0.3 linearly, then greedy
+        if move_num < temp_threshold:
+            temperature = max(0.3, 1.0 - 0.7 * move_num / temp_threshold)
+        else:
+            temperature = 0.01
         move_probs, root = mcts_engine.search(board, temperature=temperature)
 
         game_data.append((board.fen(), move_probs, board.turn))
@@ -212,7 +216,7 @@ def train_on_buffer(model, replay_buffer, optimizer, device,
         batch = Batch.from_data_list(samples).to(device)
         optimizer.zero_grad()
 
-        value_logits, policy_logits = model(batch)
+        value_logits, policy_logits, *_ = model(batch)
 
         # --- Value loss (logged only — value head is frozen) ---
         z = batch.value_target.view(-1)
@@ -232,7 +236,7 @@ def train_on_buffer(model, replay_buffer, optimizer, device,
         else:
             policy_loss = torch.tensor(0.0, device=device)
 
-        loss = policy_loss  # value head is frozen; value_loss logged only
+        loss = policy_loss + value_loss  # value head trains with tiny LR
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -354,7 +358,7 @@ def pretrain_policy_head(args, device):
             batch = batch.to(device)
             optimizer.zero_grad()
 
-            value_logits, policy_logits = model(batch)
+            value_logits, policy_logits, *_ = model(batch)
 
             # Value loss
             target_wdl = batch.y.view(-1, 3)
@@ -385,7 +389,7 @@ def pretrain_policy_head(args, device):
         with torch.no_grad():
             for batch in val_loader:
                 batch = batch.to(device)
-                value_logits, policy_logits = model(batch)
+                value_logits, policy_logits, *_ = model(batch)
 
                 target_wdl = batch.y.view(-1, 3)
                 log_probs = F.log_softmax(value_logits, dim=1)
@@ -442,20 +446,19 @@ def selfplay_main(args, model=None):
     best_model.eval()
     replay_buffer = ReplayBuffer(max_size=args.buffer_size)
 
-    # Freeze value head — preserve supervised accuracy
-    for param in model.value_head.parameters():
-        param.requires_grad = False
-    log.info("Value head frozen (supervised weights preserved)")
-
-    # Policy-only optimizer with differential LR
+    # Differential LR: backbone slow, policy fast, value head tiny
     backbone_params = [p for n, p in model.named_parameters()
-                       if "policy_mlp" not in n and "value_head" not in n and p.requires_grad]
+                       if "policy_mlp" not in n and "value_head" not in n]
     policy_params = [p for n, p in model.named_parameters()
-                     if "policy_mlp" in n and p.requires_grad]
+                     if "policy_mlp" in n]
+    value_params = [p for n, p in model.named_parameters()
+                    if "value_head" in n]
     optimizer = AdamW([
-        {"params": backbone_params, "lr": args.lr * 0.1},
-        {"params": policy_params, "lr": args.lr},
+        {"params": backbone_params, "lr": args.lr * 0.1},   # 1e-5
+        {"params": policy_params, "lr": args.lr},            # 1e-4
+        {"params": value_params, "lr": args.lr * 0.01},     # 1e-6
     ], weight_decay=1e-4)
+    log.info("Value head unfrozen with tiny LR (0.01x)")
 
     # Build FEN pool for diverse starting positions
     fen_pool = []
@@ -472,7 +475,7 @@ def selfplay_main(args, model=None):
     log.info(f"Saving games to {games_file}")
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    log.info(f"Model: {num_params:,} trainable parameters (value head frozen)")
+    log.info(f"Model: {num_params:,} trainable parameters")
     log.info(f"Self-play: {args.iterations} iterations, {args.games_per_iter} games/iter, "
              f"{args.simulations} MCTS sims/move")
 
@@ -580,8 +583,8 @@ def main():
 
     # Self-play
     parser.add_argument("--iterations", type=int, default=30)
-    parser.add_argument("--games-per-iter", type=int, default=5)
-    parser.add_argument("--simulations", type=int, default=64)
+    parser.add_argument("--games-per-iter", type=int, default=3)
+    parser.add_argument("--simulations", type=int, default=128)
     parser.add_argument("--max-moves", type=int, default=200,
                         help="Max half-moves per self-play game")
     parser.add_argument("--buffer-size", type=int, default=300_000)
@@ -593,8 +596,8 @@ def main():
 
     # Evaluation
     parser.add_argument("--eval-interval", type=int, default=5)
-    parser.add_argument("--eval-games", type=int, default=6)
-    parser.add_argument("--eval-sims", type=int, default=32,
+    parser.add_argument("--eval-games", type=int, default=12)
+    parser.add_argument("--eval-sims", type=int, default=64,
                         help="MCTS simulations for evaluation games")
     parser.add_argument("--save-interval", type=int, default=10)
     parser.add_argument("--games-file", type=str, default="selfplay_games.jsonl",
