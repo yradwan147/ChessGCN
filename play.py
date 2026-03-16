@@ -523,16 +523,12 @@ def main():
     parser = argparse.ArgumentParser(description="Play against the Chess GCN")
     parser.add_argument("--checkpoint", type=str, default="best_model.pt",
                         help="Path to model checkpoint")
-    parser.add_argument("--hidden", type=int, default=128)
-    parser.add_argument("--heads", type=int, default=4)
-    parser.add_argument("--blocks", type=int, default=4)
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--host", type=str, default="127.0.0.1")
     args = parser.parse_args()
 
-    print("Loading model...")
-    model, device = load_model(args.checkpoint, hidden=args.hidden,
-                               heads=args.heads, num_blocks=args.blocks)
+    print(f"Loading model from {args.checkpoint}...")
+    model, device = load_model(args.checkpoint)
     print(f"Model loaded on {device}")
     print(f"\nOpen http://{args.host}:{args.port} in your browser\n")
 

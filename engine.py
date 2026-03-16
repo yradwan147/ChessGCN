@@ -20,15 +20,52 @@ def get_device():
     return torch.device("cpu")
 
 
-def load_model(checkpoint_path, device=None, hidden=128, heads=4, num_blocks=4):
-    """Load a trained ChessGATv2 model from checkpoint."""
+def infer_architecture(state_dict):
+    """Infer hidden dim, heads, and block count from checkpoint weight shapes."""
+    # hidden = output dim of input_proj
+    hidden = state_dict["input_proj.0.weight"].shape[0]
+
+    # num_blocks = count distinct block indices
+    block_ids = set()
+    for k in state_dict:
+        if k.startswith("blocks."):
+            block_ids.add(int(k.split(".")[1]))
+    num_blocks = len(block_ids)
+
+    # heads = hidden / per-head dim, inferred from attention weight shape
+    # GATv2Conv att has shape [1, heads, per_head_dim] → heads is dim 1
+    att_key = "blocks.0.conv1.att"
+    if att_key in state_dict:
+        heads = state_dict[att_key].shape[1]
+    else:
+        heads = 4  # fallback
+
+    return hidden, heads, num_blocks
+
+
+def load_model(checkpoint_path, device=None, hidden=None, heads=None, num_blocks=None):
+    """Load a trained ChessGATv2 model from checkpoint.
+
+    Auto-detects architecture from checkpoint weights if hidden/heads/num_blocks
+    are not specified.
+    """
     if device is None:
         device = get_device()
-    model = ChessGATv2(hidden=hidden, heads=heads, num_blocks=num_blocks,
-                       policy_head=True).to(device)
     state_dict = torch.load(checkpoint_path, weights_only=True, map_location=device)
+
+    # Auto-detect architecture from weights
+    det_hidden, det_heads, det_blocks = infer_architecture(state_dict)
+    hidden = hidden or det_hidden
+    heads = heads or det_heads
+    num_blocks = num_blocks or det_blocks
+
+    has_policy = any(k.startswith("policy_mlp.") for k in state_dict)
+    model = ChessGATv2(hidden=hidden, heads=heads, num_blocks=num_blocks,
+                       policy_head=has_policy).to(device)
     model.load_state_dict(state_dict, strict=False)
     model.eval()
+    print(f"  Architecture: hidden={hidden}, heads={heads}, blocks={num_blocks}, "
+          f"policy={'yes' if has_policy else 'no'}")
     return model, device
 
 
