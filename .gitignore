@@ -1,5 +1,4 @@
 # Data
-dataset_eval.csv
 *.pt
 
 # Python
