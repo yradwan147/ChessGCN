@@ -116,12 +116,19 @@ class ChessGATv2(nn.Module):
 def load_v1_checkpoint(model, checkpoint_path, device):
     """Load a value-only (v1) checkpoint into a dual-head model.
 
-    Renames 'head.*' → 'value_head.*' and loads with strict=False
-    so the randomly-initialized policy_mlp is preserved.
+    Renames 'head.*' → 'value_head.*' and skips layers with shape
+    mismatches so different architectures don't crash.
     """
     state_dict = torch.load(checkpoint_path, weights_only=True, map_location=device)
+    model_state = model.state_dict()
     migrated = {}
+    skipped = []
     for k, v in state_dict.items():
         new_key = k.replace("head.", "value_head.") if k.startswith("head.") else k
-        migrated[new_key] = v
+        if new_key in model_state and model_state[new_key].shape == v.shape:
+            migrated[new_key] = v
+        else:
+            skipped.append(new_key)
     model.load_state_dict(migrated, strict=False)
+    if skipped:
+        print(f"  Skipped {len(skipped)} layers with shape mismatch (expected for different arch)")

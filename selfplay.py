@@ -255,12 +255,14 @@ def train_on_buffer(model, replay_buffer, optimizer, device,
 # ── Evaluation: challenger vs best model ─────────────────────────────────────
 
 def evaluate_models(challenger, best_model, device,
-                    num_games=40, num_simulations=64, max_moves=200):
+                    num_games=40, num_simulations=64, max_moves=200,
+                    use_gumbel=False):
     """Play challenger vs best. Returns challenger win rate."""
     challenger.eval()
     best_model.eval()
-    c_mcts = MCTS(challenger, device, num_simulations=num_simulations)
-    b_mcts = MCTS(best_model, device, num_simulations=num_simulations)
+    EngineClass = GumbelMCTS if use_gumbel else MCTS
+    c_mcts = EngineClass(challenger, device, num_simulations=num_simulations)
+    b_mcts = EngineClass(best_model, device, num_simulations=num_simulations)
 
     challenger_points = 0.0
 
@@ -566,6 +568,7 @@ def selfplay_main(args, model=None):
                 num_games=args.eval_games,
                 num_simulations=args.eval_sims,
                 max_moves=args.max_moves,
+                use_gumbel=args.use_gumbel,
             )
             log.info(f"  Challenger win rate: {win_rate:.1%}")
             if win_rate >= 0.55:
