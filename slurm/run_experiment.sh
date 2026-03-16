@@ -35,7 +35,7 @@ shift 6
 EXTRA_FLAGS="$*"
 
 # ── Paths ──
-PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT_DIR="${SLURM_SUBMIT_DIR:-.}"
 WORKDIR="${PROJECT_DIR}/workdirs/${RUN_TAG}"
 OUTDIR="${PROJECT_DIR}/results/${RUN_TAG}"
 mkdir -p "$WORKDIR" "$OUTDIR"
