@@ -20,13 +20,14 @@ def get_device():
     return torch.device("cpu")
 
 
-def load_model(checkpoint_path, device=None):
+def load_model(checkpoint_path, device=None, hidden=128, heads=4, num_blocks=4):
     """Load a trained ChessGATv2 model from checkpoint."""
     if device is None:
         device = get_device()
-    model = ChessGATv2().to(device)
+    model = ChessGATv2(hidden=hidden, heads=heads, num_blocks=num_blocks,
+                       policy_head=True).to(device)
     state_dict = torch.load(checkpoint_path, weights_only=True, map_location=device)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
     model.eval()
     return model, device
 
@@ -39,7 +40,7 @@ def evaluate_position(model, device, fen):
     """
     graph = fen_to_graph(fen)
     batch = Batch.from_data_list([graph]).to(device)
-    logits, _ = model(batch)
+    logits, *_ = model(batch)
     probs = F.softmax(logits, dim=1)[0]
     return {
         "win": probs[0].item(),
@@ -76,7 +77,7 @@ def get_best_move(model, device, board, top_k=5):
 
     # Batch inference
     batch = Batch.from_data_list(graphs).to(device)
-    logits, _ = model(batch)
+    logits, *_ = model(batch)
     probs = F.softmax(logits, dim=1)  # [num_moves, 3]
 
     # Value from opponent's perspective, negated = value for us
