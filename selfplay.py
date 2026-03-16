@@ -32,6 +32,7 @@ from tqdm import tqdm
 from data import fen_to_graph, cp_to_wdl, load_and_sample
 from model import ChessGATv2, load_v1_checkpoint
 from mcts import MCTS
+from gumbel_mcts import GumbelMCTS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -446,19 +447,29 @@ def selfplay_main(args, model=None):
     best_model.eval()
     replay_buffer = ReplayBuffer(max_size=args.buffer_size)
 
-    # Differential LR: backbone slow, policy fast, value head tiny
+    # Optimizer with differential LR
     backbone_params = [p for n, p in model.named_parameters()
                        if "policy_mlp" not in n and "value_head" not in n]
     policy_params = [p for n, p in model.named_parameters()
                      if "policy_mlp" in n]
-    value_params = [p for n, p in model.named_parameters()
-                    if "value_head" in n]
-    optimizer = AdamW([
-        {"params": backbone_params, "lr": args.lr * 0.1},   # 1e-5
-        {"params": policy_params, "lr": args.lr},            # 1e-4
-        {"params": value_params, "lr": args.lr * 0.01},     # 1e-6
-    ], weight_decay=1e-4)
-    log.info("Value head unfrozen with tiny LR (0.01x)")
+
+    if args.freeze_value:
+        for param in model.value_head.parameters():
+            param.requires_grad = False
+        optimizer = AdamW([
+            {"params": backbone_params, "lr": args.lr * 0.1},
+            {"params": policy_params, "lr": args.lr},
+        ], weight_decay=1e-4)
+        log.info("Value head frozen (supervised weights preserved)")
+    else:
+        value_params = [p for n, p in model.named_parameters()
+                        if "value_head" in n]
+        optimizer = AdamW([
+            {"params": backbone_params, "lr": args.lr * 0.1},
+            {"params": policy_params, "lr": args.lr},
+            {"params": value_params, "lr": args.lr * 0.01},
+        ], weight_decay=1e-4)
+        log.info("Value head unfrozen with tiny LR (0.01x)")
 
     # Build FEN pool for diverse starting positions
     fen_pool = []
@@ -487,7 +498,10 @@ def selfplay_main(args, model=None):
 
         # ── Phase 1: Self-play ──
         model.eval()
-        mcts_engine = MCTS(model, device, num_simulations=args.simulations)
+        if args.use_gumbel:
+            mcts_engine = GumbelMCTS(model, device, num_simulations=args.simulations)
+        else:
+            mcts_engine = MCTS(model, device, num_simulations=args.simulations)
 
         outcomes = {"W": 0, "D": 0, "B": 0}
         positions_added = 0
@@ -602,6 +616,12 @@ def main():
     parser.add_argument("--save-interval", type=int, default=10)
     parser.add_argument("--games-file", type=str, default="selfplay_games.jsonl",
                         help="Path to save game records (JSON lines)")
+
+    # MCTS variant
+    parser.add_argument("--use-gumbel", action="store_true",
+                        help="Use Gumbel MuZero MCTS instead of standard PUCT")
+    parser.add_argument("--freeze-value", action="store_true",
+                        help="Freeze value head during self-play (preserve supervised weights)")
 
     # Bootstrap
     parser.add_argument("--pretrain-policy", action="store_true",
