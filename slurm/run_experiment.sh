@@ -40,9 +40,9 @@ WORKDIR="${PROJECT_DIR}/workdirs/${RUN_TAG}"
 OUTDIR="${PROJECT_DIR}/results/${RUN_TAG}"
 mkdir -p "$WORKDIR" "$OUTDIR"
 
-# ── Set up isolated workdir (prevents checkpoint collisions between runs) ──
+# ── Set up isolated workdir (symlinks to save disk, copies only .py) ──
 cp "${PROJECT_DIR}"/*.py "$WORKDIR/"
-cp "${PROJECT_DIR}/dataset_eval.csv" "$WORKDIR/"
+ln -sf "${PROJECT_DIR}/dataset_eval.csv" "$WORKDIR/dataset_eval.csv"
 cd "$WORKDIR"
 
 echo "============================================================"
@@ -53,6 +53,7 @@ echo "  Extra:  ${EXTRA_FLAGS:-none}"
 echo "  Device: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'unknown')"
 echo "  Workdir: ${WORKDIR}"
 echo "  Output:  ${OUTDIR}"
+echo "  Disk:    $(df -h . | tail -1 | awk '{print $4 " available"}')"
 echo "============================================================"
 
 # ── Phase 1: Supervised training ──
@@ -67,7 +68,8 @@ python train.py \
     --epochs 100 \
     --patience 20 \
     --batch-size 256 \
-    --lr 1e-3 2>&1 | tee "${OUTDIR}/supervised.log"
+    --lr 1e-3 \
+    --no-cache 2>&1 | tee "${OUTDIR}/supervised.log"
 
 # Copy supervised checkpoint
 cp best_model.pt "${OUTDIR}/best_model_supervised.pt"
