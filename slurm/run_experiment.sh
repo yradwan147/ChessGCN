@@ -35,10 +35,15 @@ shift 6
 EXTRA_FLAGS="$*"
 
 # ── Paths ──
-OUTDIR="results/${RUN_TAG}"
-mkdir -p "$OUTDIR"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+WORKDIR="${PROJECT_DIR}/workdirs/${RUN_TAG}"
+OUTDIR="${PROJECT_DIR}/results/${RUN_TAG}"
+mkdir -p "$WORKDIR" "$OUTDIR"
 
-DATA_PATH="dataset_eval.csv"
+# ── Set up isolated workdir (prevents checkpoint collisions between runs) ──
+cp "${PROJECT_DIR}"/*.py "$WORKDIR/"
+cp "${PROJECT_DIR}/dataset_eval.csv" "$WORKDIR/"
+cd "$WORKDIR"
 
 echo "============================================================"
 echo "[CONFIG] Run: ${RUN_TAG}"
@@ -46,14 +51,15 @@ echo "  Model:  hidden=${HIDDEN}, heads=${HEADS}, blocks=${BLOCKS}"
 echo "  MCTS:   Gumbel, sims=${SIMS}, games/iter=${GAMES}"
 echo "  Extra:  ${EXTRA_FLAGS:-none}"
 echo "  Device: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'unknown')"
-echo "  Output: ${OUTDIR}"
+echo "  Workdir: ${WORKDIR}"
+echo "  Output:  ${OUTDIR}"
 echo "============================================================"
 
 # ── Phase 1: Supervised training ──
 echo ""
 echo "[PHASE 1] Supervised training..."
 python train.py \
-    --data "$DATA_PATH" \
+    --data dataset_eval.csv \
     --num-samples 999999 \
     --hidden "$HIDDEN" \
     --heads "$HEADS" \
@@ -76,7 +82,7 @@ python selfplay.py \
     --blocks "$BLOCKS" \
     --checkpoint best_model.pt \
     --pretrain-policy \
-    --pretrain-data "$DATA_PATH" \
+    --pretrain-data dataset_eval.csv \
     --pretrain-epochs 10 \
     --use-gumbel \
     --iterations 30 \
@@ -94,7 +100,7 @@ python selfplay.py \
     --games-file "${OUTDIR}/selfplay_games.jsonl" \
     $EXTRA_FLAGS 2>&1 | tee "${OUTDIR}/selfplay.log"
 
-# Copy final checkpoints
+# Copy final checkpoints to results
 for f in selfplay_final.pt selfplay_latest.pt selfplay_best_*.pt pretrained_dual_head.pt; do
     [ -f "$f" ] && cp "$f" "${OUTDIR}/"
 done
@@ -103,3 +109,6 @@ echo ""
 echo "[SUCCESS] ${RUN_TAG} complete"
 echo "  Results in: ${OUTDIR}/"
 ls -la "${OUTDIR}/"
+
+# Clean up workdir (keep results, drop copies)
+rm -rf "$WORKDIR"
