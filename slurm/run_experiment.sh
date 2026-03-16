@@ -1,13 +1,14 @@
 #!/bin/bash --login
 # SLURM runner for ChessGCN self-play experiments
 #
-# Usage: sbatch -J run1_baseline slurm/run_experiment.sh <RUN_TAG> <HIDDEN> <HEADS> <BLOCKS> <SIMS> <GAMES>
-#   $1: RUN_TAG     — experiment identifier (e.g., "run1_baseline")
+# Usage: sbatch -J run1 slurm/run_experiment.sh <RUN_TAG> <HIDDEN> <HEADS> <BLOCKS> <SIMS> <GAMES> [EXTRA_FLAGS]
+#   $1: RUN_TAG     — experiment identifier (e.g., "r1_baseline")
 #   $2: HIDDEN      — hidden dimension (128, 192, 256)
 #   $3: HEADS       — attention heads (1, 2, 4)
 #   $4: BLOCKS      — ResGATv2 blocks (4, 5, 6)
 #   $5: SIMS        — Gumbel MCTS simulations (16, 32, 64)
 #   $6: GAMES       — games per self-play iteration (3, 5, 8)
+#   $7+: EXTRA      — extra flags passed to selfplay.py (e.g., "" or "--freeze-value")
 
 #SBATCH --time=30:00:00
 #SBATCH --nodes=1
@@ -30,6 +31,8 @@ HEADS=${3:-4}
 BLOCKS=${4:-4}
 SIMS=${5:-32}
 GAMES=${6:-3}
+shift 6
+EXTRA_FLAGS="$*"
 
 # ── Paths ──
 OUTDIR="results/${RUN_TAG}"
@@ -41,6 +44,7 @@ echo "============================================================"
 echo "[CONFIG] Run: ${RUN_TAG}"
 echo "  Model:  hidden=${HIDDEN}, heads=${HEADS}, blocks=${BLOCKS}"
 echo "  MCTS:   Gumbel, sims=${SIMS}, games/iter=${GAMES}"
+echo "  Extra:  ${EXTRA_FLAGS:-none}"
 echo "  Device: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'unknown')"
 echo "  Output: ${OUTDIR}"
 echo "============================================================"
@@ -75,7 +79,6 @@ python selfplay.py \
     --pretrain-data "$DATA_PATH" \
     --pretrain-epochs 10 \
     --use-gumbel \
-    --freeze-value \
     --iterations 30 \
     --games-per-iter "$GAMES" \
     --simulations "$SIMS" \
@@ -88,7 +91,8 @@ python selfplay.py \
     --eval-games 12 \
     --eval-sims 64 \
     --save-interval 5 \
-    --games-file "${OUTDIR}/selfplay_games.jsonl" 2>&1 | tee "${OUTDIR}/selfplay.log"
+    --games-file "${OUTDIR}/selfplay_games.jsonl" \
+    $EXTRA_FLAGS 2>&1 | tee "${OUTDIR}/selfplay.log"
 
 # Copy final checkpoints
 for f in selfplay_final.pt selfplay_latest.pt selfplay_best_*.pt pretrained_dual_head.pt; do
