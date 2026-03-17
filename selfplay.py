@@ -571,7 +571,7 @@ def selfplay_main(args, model=None):
                 use_gumbel=args.use_gumbel,
             )
             log.info(f"  Challenger win rate: {win_rate:.1%}")
-            if win_rate >= 0.55:
+            if win_rate >= args.gate_threshold:
                 log.info(f"  New best model!")
                 best_model = copy.deepcopy(model)
                 best_model.eval()
@@ -617,6 +617,8 @@ def main():
     parser.add_argument("--eval-sims", type=int, default=64,
                         help="MCTS simulations for evaluation games")
     parser.add_argument("--save-interval", type=int, default=10)
+    parser.add_argument("--gate-threshold", type=float, default=0.55,
+                        help="Win rate threshold for replacing best model")
     parser.add_argument("--games-file", type=str, default="selfplay_games.jsonl",
                         help="Path to save game records (JSON lines)")
 
