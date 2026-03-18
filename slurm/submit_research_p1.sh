@@ -25,23 +25,23 @@ echo "── Isolated tests ──"
 
 # p1: Baseline (new defaults: self-edges ON, check ON, WDL_K=200)
 echo "  p1: Baseline (new data.py defaults)"
-sbatch --time=30:00:00 -J p1_baseline slurm/run_experiment.sh p1_baseline $H $HEADS $BLK $SIMS 3 $BASE
+sbatch --time=36:00:00 -J p1_baseline slurm/run_experiment.sh p1_baseline $H $HEADS $BLK $SIMS 3 $BASE
 
 # p2: Self-edges only (disable check + old WDL_K)
 echo "  p2: Self-edges only"
-sbatch --time=30:00:00 -J p2_selfedge slurm/run_experiment.sh p2_selfedge $H $HEADS $BLK $SIMS 3 $BASE --no-check-feature --wdl-k 111
+sbatch --time=36:00:00 -J p2_selfedge slurm/run_experiment.sh p2_selfedge $H $HEADS $BLK $SIMS 3 $BASE --no-check-feature --wdl-k 111
 
 # p3: Is-in-check only (disable self-edges + old WDL_K)
 echo "  p3: Check feature only"
-sbatch --time=30:00:00 -J p3_check slurm/run_experiment.sh p3_check $H $HEADS $BLK $SIMS 3 $BASE --no-self-edges --wdl-k 111
+sbatch --time=36:00:00 -J p3_check slurm/run_experiment.sh p3_check $H $HEADS $BLK $SIMS 3 $BASE --no-self-edges --wdl-k 111
 
 # p4: WDL_K=200 only (disable self-edges + check)
 echo "  p4: WDL_K=200 only"
-sbatch --time=30:00:00 -J p4_wdlk slurm/run_experiment.sh p4_wdlk $H $HEADS $BLK $SIMS 3 $BASE --no-self-edges --no-check-feature
+sbatch --time=36:00:00 -J p4_wdlk slurm/run_experiment.sh p4_wdlk $H $HEADS $BLK $SIMS 3 $BASE --no-self-edges --no-check-feature
 
 # p5: EMA only (old features)
 echo "  p5: EMA only"
-sbatch --time=30:00:00 -J p5_ema slurm/run_experiment.sh p5_ema $H $HEADS $BLK $SIMS 3 $BASE --no-self-edges --no-check-feature --wdl-k 111 --use-ema
+sbatch --time=36:00:00 -J p5_ema slurm/run_experiment.sh p5_ema $H $HEADS $BLK $SIMS 3 $BASE --no-self-edges --no-check-feature --wdl-k 111 --use-ema
 
 # p6: 30 games/iter (old features, tests data volume)
 echo "  p6: 30 games/iter"
@@ -49,11 +49,11 @@ sbatch --time=48:00:00 -J p6_30games slurm/run_experiment.sh p6_30games $H $HEAD
 
 # p7: Color flip only (old features)
 echo "  p7: Color flip"
-sbatch --time=30:00:00 -J p7_colorflip slurm/run_experiment.sh p7_colorflip $H $HEADS $BLK $SIMS 3 $BASE --no-self-edges --no-check-feature --wdl-k 111 --color-flip
+sbatch --time=36:00:00 -J p7_colorflip slurm/run_experiment.sh p7_colorflip $H $HEADS $BLK $SIMS 3 $BASE --no-self-edges --no-check-feature --wdl-k 111 --color-flip
 
 # p8: Playout cap only (old features)
 echo "  p8: Playout cap"
-sbatch --time=30:00:00 -J p8_playoutcap slurm/run_experiment.sh p8_playoutcap $H $HEADS $BLK $SIMS 3 $BASE --no-self-edges --no-check-feature --wdl-k 111 --playout-cap
+sbatch --time=36:00:00 -J p8_playoutcap slurm/run_experiment.sh p8_playoutcap $H $HEADS $BLK $SIMS 3 $BASE --no-self-edges --no-check-feature --wdl-k 111 --playout-cap
 
 COUNT=$((COUNT + 8))
 
@@ -62,7 +62,7 @@ echo "── Combined tests ──"
 
 # p9: All feature changes (self-edges + check + WDL_K)
 echo "  p9: All features combined"
-sbatch --time=30:00:00 -J p9_features slurm/run_experiment.sh p9_features $H $HEADS $BLK $SIMS 3 $BASE
+sbatch --time=36:00:00 -J p9_features slurm/run_experiment.sh p9_features $H $HEADS $BLK $SIMS 3 $BASE
 
 # p10: All data volume (30 games + color flip + playout cap, old features)
 echo "  p10: Data volume combined"
@@ -70,7 +70,7 @@ sbatch --time=48:00:00 -J p10_data slurm/run_experiment.sh p10_data $H $HEADS $B
 
 # p11: Training process (EMA + playout cap, old features)
 echo "  p11: Training process combined"
-sbatch --time=30:00:00 -J p11_training slurm/run_experiment.sh p11_training $H $HEADS $BLK $SIMS 3 $BASE --no-self-edges --no-check-feature --wdl-k 111 --use-ema --playout-cap
+sbatch --time=36:00:00 -J p11_training slurm/run_experiment.sh p11_training $H $HEADS $BLK $SIMS 3 $BASE --no-self-edges --no-check-feature --wdl-k 111 --use-ema --playout-cap
 
 # p12: EVERYTHING
 echo "  p12: All Phase 1 changes"

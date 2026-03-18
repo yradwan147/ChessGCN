@@ -106,7 +106,8 @@ class ReplayBuffer:
         self.window = window
         self.replay_decay = replay_decay
 
-    def add(self, graph, policy_target, value_target, iteration=0):
+    def add(self, graph, policy_target, value_target, iteration=0,
+            moves_left_target=None):
         entry = Data(
             x=graph.x,
             edge_index=graph.edge_index,
@@ -115,6 +116,8 @@ class ReplayBuffer:
             value_target=torch.tensor([value_target], dtype=torch.float),
             iter_num=torch.tensor([iteration], dtype=torch.long),
         )
+        if moves_left_target is not None:
+            entry.moves_left_target = torch.tensor([moves_left_target], dtype=torch.float)
         self.buffer.append(entry)
 
     def sample(self, batch_size, current_iter=0):
@@ -264,13 +267,15 @@ def play_one_game(mcts_engine, max_moves=512, temp_threshold=30,
 
 
 def add_game_to_buffer(game_data, result, replay_buffer, iteration=0,
-                       color_flip=False):
+                       color_flip=False, moves_left=False, max_moves=200):
     """Convert a self-play game into training samples and add to buffer.
 
     If color_flip=True, also adds a color-flipped copy of each position
     (value only, no policy target) for data augmentation.
+    If moves_left=True, stores normalized moves-to-end as auxiliary target.
     """
-    for entry in game_data:
+    total_moves = len(game_data)
+    for move_idx, entry in enumerate(game_data):
         fen, move_probs, side_to_move = entry[0], entry[1], entry[2]
         is_full = entry[3] if len(entry) > 3 else True
 
@@ -286,23 +291,27 @@ def add_game_to_buffer(game_data, result, replay_buffer, iteration=0,
             if policy_target.sum() > 0:
                 policy_target = policy_target / policy_target.sum()
         else:
-            # Fast-search: zero policy target (excluded from policy loss)
             policy_target = torch.zeros(len(legal_moves), dtype=torch.float)
 
         # Value from perspective of the side to move
         value = result if side_to_move == chess.WHITE else -result
 
-        replay_buffer.add(graph, policy_target, value, iteration=iteration)
+        # Moves-left target (normalized to [0, 1])
+        ml_target = None
+        if moves_left:
+            ml_target = (total_moves - move_idx) / max_moves
+
+        replay_buffer.add(graph, policy_target, value, iteration=iteration,
+                          moves_left_target=ml_target)
 
         # Color flip augmentation: add mirrored position (value only)
         if color_flip and random.random() < 0.5:
             mirrored_board = board.mirror()
             mirrored_graph = fen_to_graph(mirrored_board.fen())
-            # Zero policy target — flipped position trains value head only
             mirrored_policy = torch.zeros(
                 len(list(mirrored_board.legal_moves)), dtype=torch.float)
             replay_buffer.add(mirrored_graph, mirrored_policy, -value,
-                              iteration=iteration)
+                              iteration=iteration, moves_left_target=ml_target)
 
 
 # ── Training on replay buffer ────────────────────────────────────────────────
@@ -320,27 +329,51 @@ def train_on_buffer(model, replay_buffer, optimizer, device,
         batch = Batch.from_data_list(samples).to(device)
         optimizer.zero_grad()
 
-        value_logits, policy_logits, *_ = model(batch)
+        value_logits, policy_logits, moves_left_pred = model(batch)
 
-        # --- Value loss (logged only — value head is frozen) ---
+        # --- Value loss ---
         z = batch.value_target.view(-1)
-        target_wdl = torch.zeros(z.size(0), 3, device=z.device)
-        target_wdl[:, 0] = (z == 1).float()    # win
-        target_wdl[:, 1] = (z == 0).float()    # draw
-        target_wdl[:, 2] = (z == -1).float()   # loss
-        log_probs = F.log_softmax(value_logits, dim=1)
-        value_loss = F.kl_div(log_probs, target_wdl, reduction="batchmean")
+        n_val = value_logits.shape[1]
+        if n_val == 3:
+            # Standard WDL loss
+            target_wdl = torch.zeros(z.size(0), 3, device=z.device)
+            target_wdl[:, 0] = (z == 1).float()    # win
+            target_wdl[:, 1] = (z == 0).float()    # draw
+            target_wdl[:, 2] = (z == -1).float()   # loss
+            log_probs = F.log_softmax(value_logits, dim=1)
+            value_loss = F.kl_div(log_probs, target_wdl, reduction="batchmean")
+        else:
+            # Score distribution (N bins): HL-Gauss soft targets
+            bin_centers = torch.linspace(0, 1, n_val, device=z.device)
+            bin_width = bin_centers[1] - bin_centers[0]
+            sigma = 0.75 * bin_width
+            # Convert z ∈ {-1, 0, 1} to win probability ∈ [0, 1]
+            win_pct = (z + 1.0) / 2.0  # -1→0, 0→0.5, 1→1
+            # HL-Gauss soft target distribution
+            target_dist = torch.exp(-0.5 * ((bin_centers.unsqueeze(0) - win_pct.unsqueeze(1)) / sigma) ** 2)
+            target_dist = target_dist / target_dist.sum(dim=1, keepdim=True)
+            log_probs = F.log_softmax(value_logits, dim=1)
+            value_loss = F.kl_div(log_probs, target_dist, reduction="batchmean")
 
-        # --- Policy loss ---
+        # --- Policy loss (only on legal-move edges, not self-edges) ---
         if policy_logits is not None and policy_logits.numel() > 0:
-            edge_batch = batch.batch[batch.edge_index[0]]
+            # edge_batch must match policy_logits (self-edges filtered in model)
+            move_mask = batch.edge_index[0] != batch.edge_index[1]
+            edge_batch = batch.batch[batch.edge_index[0][move_mask]]
             policy_loss = per_graph_cross_entropy(
                 policy_logits, batch.policy_target, edge_batch,
             )
         else:
             policy_loss = torch.tensor(0.0, device=device)
 
-        loss = policy_loss + value_loss  # value head trains with tiny LR
+        loss = policy_loss + value_loss
+
+        # --- Moves-left auxiliary loss ---
+        if moves_left_pred is not None and hasattr(batch, 'moves_left_target'):
+            ml_target = batch.moves_left_target.view(-1)
+            ml_loss = F.mse_loss(moves_left_pred.squeeze(-1), ml_target)
+            loss = loss + 0.002 * ml_loss  # Czech et al. weight
+
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -476,9 +509,10 @@ def pretrain_policy_head(args, device):
             log_probs = F.log_softmax(value_logits, dim=1)
             value_loss = F.kl_div(log_probs, target_wdl, reduction="batchmean")
 
-            # Policy loss
+            # Policy loss (filter self-edges)
             if policy_logits is not None and policy_logits.numel() > 0:
-                edge_batch = batch.batch[batch.edge_index[0]]
+                move_mask = batch.edge_index[0] != batch.edge_index[1]
+                edge_batch = batch.batch[batch.edge_index[0][move_mask]]
                 policy_loss = per_graph_cross_entropy(
                     policy_logits, batch.policy_target, edge_batch,
                 )
@@ -507,7 +541,8 @@ def pretrain_policy_head(args, device):
                 v_vloss += F.kl_div(log_probs, target_wdl, reduction="batchmean").item()
 
                 if policy_logits is not None and policy_logits.numel() > 0:
-                    edge_batch = batch.batch[batch.edge_index[0]]
+                    move_mask = batch.edge_index[0] != batch.edge_index[1]
+                    edge_batch = batch.batch[batch.edge_index[0][move_mask]]
                     v_ploss += per_graph_cross_entropy(
                         policy_logits, batch.policy_target, edge_batch,
                     ).item()
@@ -687,7 +722,9 @@ def selfplay_main(args, model=None):
                 start_fen=start_fen, fast_engine=fast_engine,
             )
             add_game_to_buffer(game_data, result, replay_buffer,
-                               iteration=iteration, color_flip=args.color_flip)
+                               iteration=iteration, color_flip=args.color_flip,
+                               moves_left=args.moves_left_head,
+                               max_moves=args.max_moves)
             positions_added += len(game_data)
 
             # Save game record to file
@@ -739,9 +776,10 @@ def selfplay_main(args, model=None):
         # ── Phase 3: Evaluation (every K iterations) ──
         if iteration % args.eval_interval == 0:
             log.info(f"  Evaluating challenger vs best ({args.eval_games} games)...")
-            model.eval()
+            eval_model = ema_model if ema_model else model
+            eval_model.eval()
             win_rate = evaluate_models(
-                model, best_model, device,
+                eval_model, best_model, device,
                 num_games=args.eval_games,
                 num_simulations=args.eval_sims,
                 max_moves=args.max_moves,
@@ -750,9 +788,9 @@ def selfplay_main(args, model=None):
             log.info(f"  Challenger win rate: {win_rate:.1%}")
             if win_rate >= args.gate_threshold:
                 log.info(f"  New best model!")
-                best_model = copy.deepcopy(model)
+                best_model = copy.deepcopy(eval_model)
                 best_model.eval()
-                torch.save(model.state_dict(), f"selfplay_best_iter{iteration}.pt")
+                torch.save(eval_model.state_dict(), f"selfplay_best_iter{iteration}.pt")
                 consecutive_bad_evals = 0
             elif args.restore_on_collapse and win_rate < 0.35:
                 consecutive_bad_evals += 1

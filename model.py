@@ -5,7 +5,8 @@ ResGATv2 model for chess position evaluation (WDL + optional policy).
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATv2Conv, global_mean_pool, GlobalAttention, BatchNorm
+from torch_geometric.nn import GATv2Conv, global_mean_pool, BatchNorm
+from torch_geometric.nn.aggr import AttentionalAggregation
 
 from data import EDGE_DIM
 
@@ -81,7 +82,7 @@ class ChessGATv2(nn.Module):
         # Pooling: attention-based or mean
         if attn_pool:
             gate_nn = nn.Sequential(nn.Linear(hidden, 64), nn.ReLU(), nn.Linear(64, 1))
-            self.pool = GlobalAttention(gate_nn)
+            self.pool = AttentionalAggregation(gate_nn)
         else:
             self.pool = None  # use global_mean_pool
 
