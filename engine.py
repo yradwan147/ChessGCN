@@ -21,7 +21,7 @@ class OpeningBook:
     """
 
     def __init__(self, path):
-        self.positions = {}  # fen_key -> chess.Move
+        self.positions = {}  # fen_key -> list of chess.Move
         with open(path) as f:
             for line in f:
                 line = line.strip()
@@ -37,19 +37,24 @@ class OpeningBook:
                         move = chess.Move.from_uci(uci)
                         if move not in board.legal_moves:
                             break
-                        # Key: position without move counters (so transpositions match)
                         key = " ".join(board.fen().split()[:4])
-                        self.positions[key] = move
+                        if key not in self.positions:
+                            self.positions[key] = []
+                        if move not in self.positions[key]:
+                            self.positions[key].append(move)
                         board.push(move)
                     except ValueError:
                         break
 
     def lookup(self, board):
-        """Return book move for position, or None if not in book."""
+        """Return a random book move for position, or None if not in book."""
+        import random
         key = " ".join(board.fen().split()[:4])
-        move = self.positions.get(key)
-        if move and move in board.legal_moves:
-            return move
+        moves = self.positions.get(key)
+        if moves:
+            legal = [m for m in moves if m in board.legal_moves]
+            if legal:
+                return random.choice(legal)
         return None
 
     def __len__(self):
