@@ -173,12 +173,17 @@ def per_graph_cross_entropy(logits, targets, batch_idx):
 
 def play_one_game(mcts_engine, max_moves=512, temp_threshold=30,
                   resign_threshold=-0.95, resign_enabled=True,
-                  start_fen=None):
+                  start_fen=None, fast_engine=None):
     """
     Play a single self-play game.
 
+    Args:
+        fast_engine: If provided, enables playout cap randomization.
+                     75% of moves use fast_engine (no policy target),
+                     25% use mcts_engine (full search, policy target recorded).
+
     Returns:
-        game_data: list of (fen, mcts_policy_dict, side_to_move) tuples
+        game_data: list of (fen, mcts_policy_dict, side_to_move, is_full) tuples
         game_record: list of dicts with per-move info for game logging
         result: 1.0 (White wins), 0.0 (draw), -1.0 (Black wins)
     """
@@ -190,14 +195,20 @@ def play_one_game(mcts_engine, max_moves=512, temp_threshold=30,
         if board.is_game_over(claim_draw=True):
             break
 
-        # Smooth temperature annealing: 1.0 → 0.3 linearly, then greedy
-        if move_num < temp_threshold:
-            temperature = max(0.3, 1.0 - 0.7 * move_num / temp_threshold)
+        # Playout cap: 75% fast search, 25% full search
+        is_full_search = True
+        if fast_engine and random.random() < 0.75:
+            is_full_search = False
+            move_probs, root = fast_engine.search(board, temperature=0.01)
         else:
-            temperature = 0.01
-        move_probs, root = mcts_engine.search(board, temperature=temperature)
+            # Smooth temperature annealing: 1.0 → 0.3 linearly, then greedy
+            if move_num < temp_threshold:
+                temperature = max(0.3, 1.0 - 0.7 * move_num / temp_threshold)
+            else:
+                temperature = 0.01
+            move_probs, root = mcts_engine.search(board, temperature=temperature)
 
-        game_data.append((board.fen(), move_probs, board.turn))
+        game_data.append((board.fen(), move_probs, board.turn, is_full_search))
 
         # Build top-5 move info from MCTS visit counts
         sorted_moves = sorted(move_probs.items(), key=lambda x: x[1], reverse=True)[:5]
@@ -252,23 +263,46 @@ def play_one_game(mcts_engine, max_moves=512, temp_threshold=30,
     return game_data, game_record, result
 
 
-def add_game_to_buffer(game_data, result, replay_buffer, iteration=0):
-    """Convert a self-play game into training samples and add to buffer."""
-    for fen, move_probs, side_to_move in game_data:
+def add_game_to_buffer(game_data, result, replay_buffer, iteration=0,
+                       color_flip=False):
+    """Convert a self-play game into training samples and add to buffer.
+
+    If color_flip=True, also adds a color-flipped copy of each position
+    (value only, no policy target) for data augmentation.
+    """
+    for entry in game_data:
+        fen, move_probs, side_to_move = entry[0], entry[1], entry[2]
+        is_full = entry[3] if len(entry) > 3 else True
+
         graph = fen_to_graph(fen)
         board = chess.Board(fen)
         legal_moves = list(board.legal_moves)
 
-        policy_target = torch.zeros(len(legal_moves), dtype=torch.float)
-        for i, move in enumerate(legal_moves):
-            policy_target[i] = move_probs.get(move, 0.0)
-        if policy_target.sum() > 0:
-            policy_target = policy_target / policy_target.sum()
+        # Only record policy target for full-search positions
+        if is_full:
+            policy_target = torch.zeros(len(legal_moves), dtype=torch.float)
+            for i, move in enumerate(legal_moves):
+                policy_target[i] = move_probs.get(move, 0.0)
+            if policy_target.sum() > 0:
+                policy_target = policy_target / policy_target.sum()
+        else:
+            # Fast-search: zero policy target (excluded from policy loss)
+            policy_target = torch.zeros(len(legal_moves), dtype=torch.float)
 
         # Value from perspective of the side to move
         value = result if side_to_move == chess.WHITE else -result
 
         replay_buffer.add(graph, policy_target, value, iteration=iteration)
+
+        # Color flip augmentation: add mirrored position (value only)
+        if color_flip and random.random() < 0.5:
+            mirrored_board = board.mirror()
+            mirrored_graph = fen_to_graph(mirrored_board.fen())
+            # Zero policy target — flipped position trains value head only
+            mirrored_policy = torch.zeros(
+                len(list(mirrored_board.legal_moves)), dtype=torch.float)
+            replay_buffer.add(mirrored_graph, mirrored_policy, -value,
+                              iteration=iteration)
 
 
 # ── Training on replay buffer ────────────────────────────────────────────────
@@ -499,6 +533,23 @@ def selfplay_main(args, model=None):
     device = get_device()
     log.info(f"Device: {device}")
 
+    # Override data.py defaults based on CLI flags
+    import data as data_module
+    if args.no_self_edges:
+        # Monkey-patch fen_to_graph to disable self-edges
+        _original_ftg = data_module.fen_to_graph
+        data_module.fen_to_graph = lambda fen, wdl=None, **kw: _original_ftg(
+            fen, wdl, self_edges=False, check_feature=not args.no_check_feature)
+        globals()['fen_to_graph'] = data_module.fen_to_graph
+    elif args.no_check_feature:
+        _original_ftg = data_module.fen_to_graph
+        data_module.fen_to_graph = lambda fen, wdl=None, **kw: _original_ftg(
+            fen, wdl, check_feature=False)
+        globals()['fen_to_graph'] = data_module.fen_to_graph
+    if args.wdl_k != 200.0:
+        data_module.WDL_K = args.wdl_k
+        log.info(f"WDL_K set to {args.wdl_k}")
+
     if model is None:
         model = ChessGATv2(
             hidden=args.hidden, heads=args.heads, num_blocks=args.blocks,
@@ -566,6 +617,13 @@ def selfplay_main(args, model=None):
     games_file = Path(args.games_file)
     log.info(f"Saving games to {games_file}")
 
+    # EMA model for stable self-play game generation
+    ema_model = None
+    if args.use_ema:
+        ema_model = copy.deepcopy(model)
+        ema_model.eval()
+        log.info("EMA model enabled (decay=0.995)")
+
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log.info(f"Model: {num_params:,} trainable parameters")
     log.info(f"Self-play: {args.iterations} iterations, {args.games_per_iter} games/iter, "
@@ -580,11 +638,21 @@ def selfplay_main(args, model=None):
         log.info(f"{'='*60}")
 
         # ── Phase 1: Self-play ──
-        model.eval()
+        # Use EMA model for game generation if available (more stable)
+        play_model = ema_model if ema_model else model
+        play_model.eval()
         if args.use_gumbel:
-            mcts_engine = GumbelMCTS(model, device, num_simulations=args.simulations)
+            mcts_engine = GumbelMCTS(play_model, device, num_simulations=args.simulations)
         else:
-            mcts_engine = MCTS(model, device, num_simulations=args.simulations)
+            mcts_engine = MCTS(play_model, device, num_simulations=args.simulations)
+
+        # Fast engine for playout cap randomization (fewer sims, no noise)
+        fast_engine = None
+        if args.playout_cap:
+            if args.use_gumbel:
+                fast_engine = GumbelMCTS(play_model, device, num_simulations=args.fast_sims)
+            else:
+                fast_engine = MCTS(play_model, device, num_simulations=args.fast_sims)
 
         outcomes = {"W": 0, "D": 0, "B": 0}
         positions_added = 0
@@ -606,9 +674,10 @@ def selfplay_main(args, model=None):
 
             game_data, game_record, result = play_one_game(
                 mcts_engine, max_moves=args.max_moves, resign_enabled=resign_on,
-                start_fen=start_fen,
+                start_fen=start_fen, fast_engine=fast_engine,
             )
-            add_game_to_buffer(game_data, result, replay_buffer, iteration=iteration)
+            add_game_to_buffer(game_data, result, replay_buffer,
+                               iteration=iteration, color_flip=args.color_flip)
             positions_added += len(game_data)
 
             # Save game record to file
@@ -645,6 +714,12 @@ def selfplay_main(args, model=None):
         )
         log.info(f"  Training ({actual_steps} steps): value_loss={losses['value_loss']:.4f}, "
                  f"policy_loss={losses['policy_loss']:.4f}")
+
+        # Update EMA model
+        if ema_model is not None:
+            with torch.no_grad():
+                for ema_p, p in zip(ema_model.parameters(), model.parameters()):
+                    ema_p.data.mul_(0.995).add_(p.data, alpha=0.005)
 
         # Save checkpoint every iteration (crash resilience)
         torch.save(model.state_dict(), "selfplay_latest.pt")
@@ -736,6 +811,22 @@ def main():
                         help="Fraction of games starting from opening suite positions")
     parser.add_argument("--fen-pool-ratio", type=float, default=0.1,
                         help="Fraction of games from FEN pool (remainder = standard position)")
+
+    # Research-driven improvements
+    parser.add_argument("--use-ema", action="store_true",
+                        help="Use EMA weight averaging for game generation (decay=0.995)")
+    parser.add_argument("--color-flip", action="store_true",
+                        help="Color flip augmentation (adds mirrored positions to buffer)")
+    parser.add_argument("--playout-cap", action="store_true",
+                        help="Playout cap randomization (75%% fast 8 sims / 25%% full)")
+    parser.add_argument("--fast-sims", type=int, default=8,
+                        help="Simulations for fast search in playout cap")
+    parser.add_argument("--no-self-edges", action="store_true",
+                        help="Disable self-edges in graph construction")
+    parser.add_argument("--no-check-feature", action="store_true",
+                        help="Disable is-in-check node feature")
+    parser.add_argument("--wdl-k", type=float, default=200.0,
+                        help="WDL_K constant for centipawn to WDL conversion")
 
     # Anti-collapse
     parser.add_argument("--buffer-window", type=int, default=10,
