@@ -400,9 +400,14 @@ def pretrain_policy_head(args, device):
     """Pre-train the policy head on Stockfish best moves before self-play."""
     log.info("=== Supervised Policy Pretraining ===")
 
+    node_dim = 21 if args.no_check_feature else 22
     model = ChessGATv2(
+        node_dim=node_dim,
         hidden=args.hidden, heads=args.heads, num_blocks=args.blocks,
         policy_head=True,
+        attn_pool=args.attn_pool,
+        moves_left_head=args.moves_left_head,
+        score_dist_bins=args.score_dist_bins,
     ).to(device)
 
     if Path(args.checkpoint).exists():
@@ -551,9 +556,14 @@ def selfplay_main(args, model=None):
         log.info(f"WDL_K set to {args.wdl_k}")
 
     if model is None:
+        node_dim = 21 if args.no_check_feature else 22
         model = ChessGATv2(
+            node_dim=node_dim,
             hidden=args.hidden, heads=args.heads, num_blocks=args.blocks,
             policy_head=True,
+            attn_pool=args.attn_pool,
+            moves_left_head=args.moves_left_head,
+            score_dist_bins=args.score_dist_bins,
         ).to(device)
 
         ckpt = args.checkpoint
@@ -835,6 +845,14 @@ def main():
                         help="Exponential decay for replay weighting (e.g. 0.9). None = uniform.")
     parser.add_argument("--restore-on-collapse", action="store_true",
                         help="Restore best model weights if eval drops below 35%% twice")
+
+    # Architecture (Phase 2)
+    parser.add_argument("--attn-pool", action="store_true",
+                        help="Use global attention pooling instead of mean pooling")
+    parser.add_argument("--moves-left-head", action="store_true",
+                        help="Enable moves-left auxiliary head (Czech et al. +33 Elo)")
+    parser.add_argument("--score-dist-bins", type=int, default=0,
+                        help="Score distribution bins (0 = use WDL, 128 = recommended)")
 
     # Bootstrap
     parser.add_argument("--pretrain-policy", action="store_true",
