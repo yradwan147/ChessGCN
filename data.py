@@ -12,7 +12,9 @@ from tqdm import tqdm
 
 
 # Stockfish WDL calibration constant (centipawns → win probability)
-WDL_K = 111.0
+# K=200 gives a wider draw class than K=111 (less noisy labels near equal positions)
+# Stockfish's own calibration uses K≈271.6; 200 is a middle ground.
+WDL_K = 200.0
 
 
 def parse_evaluation(eval_str):
@@ -45,16 +47,16 @@ def cp_to_wdl(cp):
     return (win / total, draw / total, loss / total)
 
 
-EDGE_DIM = 10  # capture, promotion, castling, en_passant, dx, dy, promo_Q, promo_R, promo_B, promo_N
+EDGE_DIM = 11  # capture, promotion, castling, en_passant, dx, dy, promo_Q, promo_R, promo_B, promo_N, is_self_edge
 
 PROMO_MAP = {chess.QUEEN: 0, chess.ROOK: 1, chess.BISHOP: 2, chess.KNIGHT: 3}
 
 
-def fen_to_graph(fen, wdl=None):
+def fen_to_graph(fen, wdl=None, self_edges=True, check_feature=True):
     """
     Convert a FEN string to a PyG Data object.
 
-    Node features (21d per square):
+    Node features (22d per square, or 21d if check_feature=False):
       - Piece one-hot (12d): WP,WN,WB,WR,WQ,WK,BP,BN,BB,BR,BQ,BK
       - Empty flag (1d)
       - File (1d, normalized)
@@ -62,11 +64,13 @@ def fen_to_graph(fen, wdl=None):
       - Side to move (1d, broadcast)
       - Castling rights (4d, broadcast)
       - Half-move clock (1d, normalized, broadcast)
+      - Is-in-check (1d, broadcast) [if check_feature=True]
 
-    Edge features (10d per legal move):
+    Edge features (11d per edge):
       - is_capture, is_promotion, is_castling, is_en_passant
       - dx, dy (file/rank displacement, normalized by 7)
       - promotion type one-hot (4d: queen, rook, bishop, knight)
+      - is_self_edge (1d): 1.0 for self-loops, 0.0 for legal moves
     """
     board = chess.Board(fen)
 
@@ -79,14 +83,17 @@ def fen_to_graph(fen, wdl=None):
         float(board.has_queenside_castling_rights(chess.BLACK)),
     ]
     halfmove = min(board.halfmove_clock, 100) / 100.0
+    in_check = 1.0 if board.is_check() else 0.0
 
     # Piece one-hot indices: WP=0,WN=1,WB=2,WR=3,WQ=4,WK=5, BP=6,...,BK=11
     PIECE_OFFSET = {chess.WHITE: 0, chess.BLACK: 6}
 
+    node_dim = 22 if check_feature else 21
+
     # --- Build node features ---
     node_features = []
     for square in chess.SQUARES:  # 0..63 (a1..h8)
-        feat = [0.0] * 21
+        feat = [0.0] * node_dim
 
         piece = board.piece_at(square)
         if piece:
@@ -104,6 +111,8 @@ def fen_to_graph(fen, wdl=None):
         feat[18] = castling[2]
         feat[19] = castling[3]
         feat[20] = halfmove
+        if check_feature:
+            feat[21] = in_check
 
         node_features.append(feat)
 
@@ -111,6 +120,7 @@ def fen_to_graph(fen, wdl=None):
     src, dst = [], []
     edge_attrs = []
     move_uci = []
+    num_legal_moves = 0
 
     for move in board.legal_moves:
         from_sq = move.from_square
@@ -119,6 +129,7 @@ def fen_to_graph(fen, wdl=None):
         src.append(from_sq)
         dst.append(to_sq)
         move_uci.append(move.uci())
+        num_legal_moves += 1
 
         dx = (chess.square_file(to_sq) - chess.square_file(from_sq)) / 7.0
         dy = (chess.square_rank(to_sq) - chess.square_rank(from_sq)) / 7.0
@@ -134,9 +145,17 @@ def fen_to_graph(fen, wdl=None):
             float(board.is_en_passant(move)),
             dx, dy,
             *promo,
+            0.0,  # is_self_edge = False
         ])
 
-    # Handle positions with no legal moves (checkmate/stalemate)
+    # --- Add self-edges (64 self-loops, one per square) ---
+    if self_edges:
+        for sq in range(64):
+            src.append(sq)
+            dst.append(sq)
+            edge_attrs.append([0.0] * 10 + [1.0])  # all zeros + self-edge flag
+
+    # Handle positions with no edges at all
     if len(src) == 0:
         edge_index = torch.zeros((2, 0), dtype=torch.long)
         edge_attr = torch.zeros((0, EDGE_DIM), dtype=torch.float)
@@ -147,7 +166,8 @@ def fen_to_graph(fen, wdl=None):
     x = torch.tensor(node_features, dtype=torch.float)
 
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
-    data.move_uci = move_uci  # list of UCI strings, one per edge
+    data.move_uci = move_uci  # list of UCI strings (legal moves only, not self-edges)
+    data.num_legal_moves = num_legal_moves  # for policy head to know where legal moves end
     if wdl is not None:
         data.y = torch.tensor(wdl, dtype=torch.float)
 

@@ -52,7 +52,7 @@ class ChessGATv2(nn.Module):
 
     def __init__(
         self,
-        node_dim=21,
+        node_dim=22,
         edge_dim=EDGE_DIM,
         hidden=128,
         heads=4,
@@ -102,13 +102,18 @@ class ChessGATv2(nn.Module):
         x_pool = global_mean_pool(x, batch)
         value_logits = self.value_head(x_pool)
 
-        # Policy head
+        # Policy head (only on legal-move edges, not self-edges)
         policy_logits = None
         if self.has_policy_head and edge_index.size(1) > 0:
-            src_emb = x[edge_index[0]]
-            dst_emb = x[edge_index[1]]
-            edge_input = torch.cat([src_emb, dst_emb, edge_attr], dim=1)
-            policy_logits = self.policy_mlp(edge_input).squeeze(-1)
+            # Filter out self-edges (src == dst) for policy computation
+            move_mask = edge_index[0] != edge_index[1]
+            if move_mask.any():
+                move_idx = edge_index[:, move_mask]
+                move_attr = edge_attr[move_mask]
+                src_emb = x[move_idx[0]]
+                dst_emb = x[move_idx[1]]
+                edge_input = torch.cat([src_emb, dst_emb, move_attr], dim=1)
+                policy_logits = self.policy_mlp(edge_input).squeeze(-1)
 
         return value_logits, policy_logits
 
