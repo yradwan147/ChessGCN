@@ -109,13 +109,46 @@ def load_model(checkpoint_path, device=None, hidden=None, heads=None, num_blocks
     num_blocks = num_blocks or det_blocks
 
     has_policy = any(k.startswith("policy_mlp.") for k in state_dict)
-    model = ChessGATv2(hidden=hidden, heads=heads, num_blocks=num_blocks,
-                       policy_head=has_policy).to(device)
+    has_attn_pool = any(k.startswith("pool.") for k in state_dict)
+    has_moves_left = any(k.startswith("moves_left_head.") for k in state_dict)
+    # Detect score dist bins from value head output size
+    vh_key = "value_head.3.weight"  # last linear in value_head
+    score_dist_bins = 0
+    if vh_key in state_dict:
+        out_size = state_dict[vh_key].shape[0]
+        if out_size > 3:
+            score_dist_bins = out_size
+    # Detect node_dim from input projection
+    node_dim = state_dict["input_proj.0.weight"].shape[1] if "input_proj.0.weight" in state_dict else 22
+
+    model = ChessGATv2(
+        node_dim=node_dim, hidden=hidden, heads=heads, num_blocks=num_blocks,
+        policy_head=has_policy, attn_pool=has_attn_pool,
+        moves_left_head=has_moves_left, score_dist_bins=score_dist_bins,
+    ).to(device)
     model.load_state_dict(state_dict, strict=False)
     model.eval()
     print(f"  Architecture: hidden={hidden}, heads={heads}, blocks={num_blocks}, "
-          f"policy={'yes' if has_policy else 'no'}")
+          f"policy={'yes' if has_policy else 'no'}, attn_pool={has_attn_pool}, "
+          f"moves_left={has_moves_left}, score_bins={score_dist_bins}")
     return model, device
+
+
+def value_from_logits(value_logits):
+    """Extract scalar value in [-1, 1] from value head output.
+
+    Handles both 3-class WDL and N-bin score distribution.
+    """
+    n = value_logits.shape[-1]
+    probs = F.softmax(value_logits, dim=-1)
+    if n == 3:
+        # WDL: value = P(win) - P(loss)
+        return (probs[..., 0] - probs[..., 2])
+    else:
+        # Score distribution: expected win% mapped to [-1, 1]
+        bin_centers = torch.linspace(0, 1, n, device=value_logits.device)
+        expected = (probs * bin_centers).sum(dim=-1)
+        return 2 * expected - 1
 
 
 @torch.no_grad()
@@ -128,11 +161,15 @@ def evaluate_position(model, device, fen):
     batch = Batch.from_data_list([graph]).to(device)
     logits, *_ = model(batch)
     probs = F.softmax(logits, dim=1)[0]
-    return {
-        "win": probs[0].item(),
-        "draw": probs[1].item(),
-        "loss": probs[2].item(),
-    }
+    n = probs.shape[0]
+    if n == 3:
+        return {"win": probs[0].item(), "draw": probs[1].item(), "loss": probs[2].item()}
+    else:
+        # Score distribution: approximate WDL from bin probabilities
+        val = value_from_logits(logits[0]).item()
+        win = max(0, (val + 1) / 2)
+        loss = max(0, 1 - win)
+        return {"win": win, "draw": 0.0, "loss": loss}
 
 
 @torch.no_grad()

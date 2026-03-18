@@ -5,7 +5,7 @@ ResGATv2 model for chess position evaluation (WDL + optional policy).
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATv2Conv, global_mean_pool, BatchNorm
+from torch_geometric.nn import GATv2Conv, global_mean_pool, GlobalAttention, BatchNorm
 
 from data import EDGE_DIM
 
@@ -59,9 +59,14 @@ class ChessGATv2(nn.Module):
         num_blocks=4,
         dropout=0.2,
         policy_head=True,
+        attn_pool=False,
+        moves_left_head=False,
+        score_dist_bins=0,
     ):
         super().__init__()
         self.has_policy_head = policy_head
+        self.has_moves_left_head = moves_left_head
+        self.score_dist_bins = score_dist_bins
 
         self.input_proj = nn.Sequential(
             nn.Linear(node_dim, hidden),
@@ -73,17 +78,39 @@ class ChessGATv2(nn.Module):
             for _ in range(num_blocks)
         ])
 
-        self.value_head = nn.Sequential(
-            nn.Linear(hidden, 64),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(64, 3),  # Win, Draw, Loss
-        )
+        # Pooling: attention-based or mean
+        if attn_pool:
+            gate_nn = nn.Sequential(nn.Linear(hidden, 64), nn.ReLU(), nn.Linear(64, 1))
+            self.pool = GlobalAttention(gate_nn)
+        else:
+            self.pool = None  # use global_mean_pool
+
+        # Value head: 3-class WDL or N-bin score distribution
+        if score_dist_bins > 0:
+            self.value_head = nn.Sequential(
+                nn.Linear(hidden, 64),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(64, score_dist_bins),
+            )
+        else:
+            self.value_head = nn.Sequential(
+                nn.Linear(hidden, 64),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(64, 3),  # Win, Draw, Loss
+            )
 
         if policy_head:
-            # Input: h_src(hidden) + h_dst(hidden) + edge_attr(edge_dim)
             self.policy_mlp = nn.Sequential(
                 nn.Linear(hidden * 2 + edge_dim, 64),
+                nn.ReLU(),
+                nn.Linear(64, 1),
+            )
+
+        if moves_left_head:
+            self.moves_left_head = nn.Sequential(
+                nn.Linear(hidden, 64),
                 nn.ReLU(),
                 nn.Linear(64, 1),
             )
@@ -98,14 +125,18 @@ class ChessGATv2(nn.Module):
         for block in self.blocks:
             x = block(x, edge_index, edge_attr)
 
+        # Pooling
+        if self.pool is not None:
+            x_pool = self.pool(x, batch)
+        else:
+            x_pool = global_mean_pool(x, batch)
+
         # Value head
-        x_pool = global_mean_pool(x, batch)
         value_logits = self.value_head(x_pool)
 
         # Policy head (only on legal-move edges, not self-edges)
         policy_logits = None
         if self.has_policy_head and edge_index.size(1) > 0:
-            # Filter out self-edges (src == dst) for policy computation
             move_mask = edge_index[0] != edge_index[1]
             if move_mask.any():
                 move_idx = edge_index[:, move_mask]
@@ -115,7 +146,12 @@ class ChessGATv2(nn.Module):
                 edge_input = torch.cat([src_emb, dst_emb, move_attr], dim=1)
                 policy_logits = self.policy_mlp(edge_input).squeeze(-1)
 
-        return value_logits, policy_logits
+        # Moves-left head
+        moves_left = None
+        if self.has_moves_left_head:
+            moves_left = self.moves_left_head(x_pool)
+
+        return value_logits, policy_logits, moves_left
 
 
 def load_v1_checkpoint(model, checkpoint_path, device):
