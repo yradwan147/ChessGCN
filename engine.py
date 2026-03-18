@@ -12,6 +12,50 @@ from data import fen_to_graph
 from model import ChessGATv2
 
 
+class OpeningBook:
+    """Simple opening book for interactive play.
+
+    Loads openings from a text file (Name | uci_moves) and builds a
+    position lookup table. When the current board matches a known
+    book position, returns the next book move.
+    """
+
+    def __init__(self, path):
+        self.positions = {}  # fen_key -> chess.Move
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("|", 1)
+                if len(parts) != 2:
+                    continue
+                uci_strs = parts[1].strip().split()
+                board = chess.Board()
+                for uci in uci_strs:
+                    try:
+                        move = chess.Move.from_uci(uci)
+                        if move not in board.legal_moves:
+                            break
+                        # Key: position without move counters (so transpositions match)
+                        key = " ".join(board.fen().split()[:4])
+                        self.positions[key] = move
+                        board.push(move)
+                    except ValueError:
+                        break
+
+    def lookup(self, board):
+        """Return book move for position, or None if not in book."""
+        key = " ".join(board.fen().split()[:4])
+        move = self.positions.get(key)
+        if move and move in board.legal_moves:
+            return move
+        return None
+
+    def __len__(self):
+        return len(self.positions)
+
+
 def get_device():
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -87,19 +131,28 @@ def evaluate_position(model, device, fen):
 
 
 @torch.no_grad()
-def get_best_move(model, device, board, top_k=5):
+def get_best_move(model, device, board, top_k=5, opening_book=None):
     """
     Evaluate all legal moves and return the best one plus top-k candidates.
 
-    For each legal move:
-      - Apply it to a copy of the board
-      - Evaluate the resulting position (from the opponent's perspective)
-      - Negate the value (opponent's win = our loss)
+    If an opening_book is provided and the position is in the book,
+    returns the book move immediately without running inference.
 
     Returns:
         best_move: chess.Move
         top_moves: list of dicts with keys: move (SAN), uci, win, draw, loss, value
     """
+    # Check opening book first
+    if opening_book:
+        book_move = opening_book.lookup(board)
+        if book_move:
+            san = board.san(book_move)
+            return book_move, [{
+                "move": san, "uci": book_move.uci(),
+                "win": 0.5, "draw": 0.5, "loss": 0.0,
+                "value": 0.0, "book": True,
+            }]
+
     legal_moves = list(board.legal_moves)
     if not legal_moves:
         return None, []

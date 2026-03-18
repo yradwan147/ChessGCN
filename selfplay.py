@@ -42,6 +42,43 @@ logging.basicConfig(
 log = logging.getLogger("SelfPlay")
 
 
+# ── Opening Book ────────────────────────────────────────────────────────────
+
+def load_opening_book(path):
+    """Load opening book from a text file.
+
+    Format: Name | uci_move1 uci_move2 ...
+    Returns list of (name, result_fen) tuples where result_fen is the
+    position after all book moves have been played.
+    """
+    openings = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("|", 1)
+            if len(parts) != 2:
+                continue
+            name = parts[0].strip()
+            uci_strs = parts[1].strip().split()
+            board = chess.Board()
+            valid = True
+            for uci in uci_strs:
+                try:
+                    move = chess.Move.from_uci(uci)
+                    if move not in board.legal_moves:
+                        valid = False
+                        break
+                    board.push(move)
+                except ValueError:
+                    valid = False
+                    break
+            if valid and uci_strs:
+                openings.append((name, board.fen()))
+    return openings
+
+
 # ── Device ───────────────────────────────────────────────────────────────────
 
 def get_device():
@@ -519,6 +556,12 @@ def selfplay_main(args, model=None):
             fen_pool = random.sample(fen_pool, 10_000)
         log.info(f"Built FEN pool: {len(fen_pool)} balanced positions for diverse starts")
 
+    # Load opening book for opening suite starts
+    opening_book = []
+    if args.openings_file and Path(args.openings_file).exists():
+        opening_book = load_opening_book(args.openings_file)
+        log.info(f"Loaded opening book: {len(opening_book)} lines from {args.openings_file}")
+
     # Game log file (JSON lines format)
     games_file = Path(args.games_file)
     log.info(f"Saving games to {games_file}")
@@ -548,10 +591,19 @@ def selfplay_main(args, model=None):
 
         for g in range(args.games_per_iter):
             resign_on = random.random() > 0.2  # 80% with resign, 20% without
-            # 50% of games start from a random balanced position
+
+            # Game start selection: opening suite > FEN pool > standard
             start_fen = None
-            if fen_pool and random.random() < 0.5:
+            game_type = "standard"
+            roll = random.random()
+            if opening_book and roll < args.opening_ratio:
+                name, fen = random.choice(opening_book)
+                start_fen = fen
+                game_type = f"book:{name}"
+            elif fen_pool and roll < args.opening_ratio + args.fen_pool_ratio:
                 start_fen = random.choice(fen_pool)
+                game_type = "fen_pool"
+
             game_data, game_record, result = play_one_game(
                 mcts_engine, max_moves=args.max_moves, resign_enabled=resign_on,
                 start_fen=start_fen,
@@ -566,6 +618,7 @@ def selfplay_main(args, model=None):
                 "game": g + 1,
                 "result": result_str,
                 "num_moves": len(game_record),
+                "game_type": game_type,
                 "moves": game_record,
             }
             with open(games_file, "a") as f:
@@ -675,6 +728,14 @@ def main():
                         help="Use Gumbel MuZero MCTS instead of standard PUCT")
     parser.add_argument("--freeze-value", action="store_true",
                         help="Freeze value head during self-play (preserve supervised weights)")
+
+    # Opening suite
+    parser.add_argument("--openings-file", type=str, default=None,
+                        help="Path to opening book file (pipe-separated name|uci_moves)")
+    parser.add_argument("--opening-ratio", type=float, default=0.7,
+                        help="Fraction of games starting from opening suite positions")
+    parser.add_argument("--fen-pool-ratio", type=float, default=0.1,
+                        help="Fraction of games from FEN pool (remainder = standard position)")
 
     # Anti-collapse
     parser.add_argument("--buffer-window", type=int, default=10,

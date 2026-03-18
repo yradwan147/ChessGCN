@@ -43,6 +43,8 @@ mkdir -p "$WORKDIR" "$OUTDIR"
 # ── Set up isolated workdir (symlinks to save disk, copies only .py) ──
 cp "${PROJECT_DIR}"/*.py "$WORKDIR/"
 ln -sf "${PROJECT_DIR}/dataset_eval.csv" "$WORKDIR/dataset_eval.csv"
+# Copy opening book if it exists
+[ -f "${PROJECT_DIR}/openings.txt" ] && cp "${PROJECT_DIR}/openings.txt" "$WORKDIR/"
 cd "$WORKDIR"
 
 echo "============================================================"

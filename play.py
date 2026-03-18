@@ -12,7 +12,7 @@ import argparse
 import chess
 from flask import Flask, jsonify, request
 
-from engine import load_model, get_best_move, evaluate_position
+from engine import load_model, get_best_move, evaluate_position, OpeningBook
 
 app = Flask(__name__)
 
@@ -20,6 +20,7 @@ app = Flask(__name__)
 board = chess.Board()
 model = None
 device = None
+opening_book = None
 move_history = []
 player_color = chess.WHITE  # which side the human plays
 auto_play = False
@@ -88,7 +89,7 @@ def api_new_game():
     # If model plays white (human is black), make the first move
     result = board_state()
     if not auto_play and player_color == chess.BLACK:
-        best, top = get_best_move(model, device, board)
+        best, top = get_best_move(model, device, board, opening_book=opening_book)
         if best:
             san = board.san(best)
             board.push(best)
@@ -131,7 +132,7 @@ def api_move():
     # Model responds if game is not over
     top = []
     if not board.is_game_over():
-        best, top = get_best_move(model, device, board)
+        best, top = get_best_move(model, device, board, opening_book=opening_book)
         if best:
             san = board.san(best)
             board.push(best)
@@ -148,7 +149,7 @@ def api_auto_move():
     if board.is_game_over():
         return jsonify(board_state())
 
-    best, top = get_best_move(model, device, board)
+    best, top = get_best_move(model, device, board, opening_book=opening_book)
     if best:
         san = board.san(best)
         board.push(best)
@@ -518,11 +519,13 @@ $(document).ready(function() {
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    global model, device
+    global model, device, opening_book
 
     parser = argparse.ArgumentParser(description="Play against the Chess GCN")
     parser.add_argument("--checkpoint", type=str, default="best_model.pt",
                         help="Path to model checkpoint")
+    parser.add_argument("--openings-file", type=str, default="openings.txt",
+                        help="Path to opening book (set to '' to disable)")
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--host", type=str, default="127.0.0.1")
     args = parser.parse_args()
@@ -530,6 +533,15 @@ def main():
     print(f"Loading model from {args.checkpoint}...")
     model, device = load_model(args.checkpoint)
     print(f"Model loaded on {device}")
+
+    import os
+    if args.openings_file and os.path.exists(args.openings_file):
+        opening_book = OpeningBook(args.openings_file)
+        print(f"Opening book loaded: {len(opening_book)} positions from {args.openings_file}")
+    else:
+        opening_book = None
+        print("No opening book (model plays from scratch)")
+
     print(f"\nOpen http://{args.host}:{args.port} in your browser\n")
 
     app.run(host=args.host, port=args.port, debug=False)
