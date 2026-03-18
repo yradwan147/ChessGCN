@@ -640,16 +640,16 @@ def selfplay_main(args, model=None):
 def main():
     parser = argparse.ArgumentParser(description="Self-play training for Chess GCN")
 
-    # Model
-    parser.add_argument("--hidden", type=int, default=128)
-    parser.add_argument("--heads", type=int, default=4)
+    # Model (defaults: best architecture from sweep)
+    parser.add_argument("--hidden", type=int, default=192)
+    parser.add_argument("--heads", type=int, default=1)
     parser.add_argument("--blocks", type=int, default=4)
     parser.add_argument("--checkpoint", type=str, default="best_model.pt")
 
     # Self-play
-    parser.add_argument("--iterations", type=int, default=30)
+    parser.add_argument("--iterations", type=int, default=60)
     parser.add_argument("--games-per-iter", type=int, default=3)
-    parser.add_argument("--simulations", type=int, default=128)
+    parser.add_argument("--simulations", type=int, default=32)
     parser.add_argument("--max-moves", type=int, default=200,
                         help="Max half-moves per self-play game")
     parser.add_argument("--buffer-size", type=int, default=300_000)
@@ -664,8 +664,8 @@ def main():
     parser.add_argument("--eval-games", type=int, default=12)
     parser.add_argument("--eval-sims", type=int, default=64,
                         help="MCTS simulations for evaluation games")
-    parser.add_argument("--save-interval", type=int, default=10)
-    parser.add_argument("--gate-threshold", type=float, default=0.55,
+    parser.add_argument("--save-interval", type=int, default=5)
+    parser.add_argument("--gate-threshold", type=float, default=0.52,
                         help="Win rate threshold for replacing best model")
     parser.add_argument("--games-file", type=str, default="selfplay_games.jsonl",
                         help="Path to save game records (JSON lines)")
@@ -677,7 +677,7 @@ def main():
                         help="Freeze value head during self-play (preserve supervised weights)")
 
     # Anti-collapse
-    parser.add_argument("--buffer-window", type=int, default=None,
+    parser.add_argument("--buffer-window", type=int, default=10,
                         help="Only sample from last N iterations of data (None = no window)")
     parser.add_argument("--replay-decay", type=float, default=None,
                         help="Exponential decay for replay weighting (e.g. 0.9). None = uniform.")
