@@ -86,9 +86,15 @@ class MCTS:
         batch = Batch.from_data_list([graph]).to(self.device)
         value_logits, policy_logits, *_ = self.model(batch)
 
-        # Value: P(win) - P(loss)
-        wdl = F.softmax(value_logits, dim=1)[0]
-        value = (wdl[0] - wdl[2]).item()
+        # Value: scalar in [-1, 1] (handles both WDL and score distribution)
+        n_val = value_logits.shape[1]
+        if n_val == 3:
+            wdl = F.softmax(value_logits, dim=1)[0]
+            value = (wdl[0] - wdl[2]).item()
+        else:
+            probs = F.softmax(value_logits, dim=1)[0]
+            bin_centers = torch.linspace(0, 1, n_val, device=value_logits.device)
+            value = (2 * (probs * bin_centers).sum() - 1).item()
 
         # Policy: softmax over edge logits
         legal_moves = list(board.legal_moves)

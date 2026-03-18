@@ -245,10 +245,23 @@ def main():
     parser.add_argument("--heads", type=int, default=1)
     parser.add_argument("--blocks", type=int, default=4)
     parser.add_argument("--no-cache", action="store_true")
+    parser.add_argument("--no-self-edges", action="store_true")
+    parser.add_argument("--no-check-feature", action="store_true")
+    parser.add_argument("--wdl-k", type=float, default=200.0)
     args = parser.parse_args()
 
     project_dir = Path(__file__).parent
     device = get_device()
+
+    # Apply feature flags
+    import data as data_module
+    if args.no_self_edges or args.no_check_feature:
+        _orig_ftg = data_module.fen_to_graph
+        se = not args.no_self_edges
+        cf = not args.no_check_feature
+        data_module.fen_to_graph = lambda fen, wdl=None, **kw: _orig_ftg(fen, wdl, self_edges=se, check_feature=cf)
+    if args.wdl_k != 200.0:
+        data_module.WDL_K = args.wdl_k
 
     # ── Data loading ──
     print(f"\nLoading dataset ({args.num_samples} samples)...")
@@ -272,7 +285,9 @@ def main():
     test_loader = DataLoader(test_graphs, batch_size=args.batch_size)
 
     # ── Model ──
+    node_dim = 21 if args.no_check_feature else 22
     model = ChessGATv2(
+        node_dim=node_dim,
         hidden=args.hidden,
         heads=args.heads,
         num_blocks=args.blocks,

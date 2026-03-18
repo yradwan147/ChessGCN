@@ -58,9 +58,18 @@ echo "  Output:  ${OUTDIR}"
 echo "  Disk:    $(df -h . | tail -1 | awk '{print $4 " available"}')"
 echo "============================================================"
 
+# ── Extract feature flags that need to be shared with train.py ──
+TRAIN_FLAGS=""
+echo "$EXTRA_FLAGS" | grep -q "\-\-no-self-edges" && TRAIN_FLAGS="$TRAIN_FLAGS --no-self-edges"
+echo "$EXTRA_FLAGS" | grep -q "\-\-no-check-feature" && TRAIN_FLAGS="$TRAIN_FLAGS --no-check-feature"
+# Extract --wdl-k value if present
+WDL_K_VAL=$(echo "$EXTRA_FLAGS" | grep -oP '(?<=--wdl-k )\S+' || true)
+[ -n "$WDL_K_VAL" ] && TRAIN_FLAGS="$TRAIN_FLAGS --wdl-k $WDL_K_VAL"
+
 # ── Phase 1: Supervised training ──
 echo ""
 echo "[PHASE 1] Supervised training..."
+echo "  Train flags: ${TRAIN_FLAGS:-none}"
 python train.py \
     --data dataset_eval.csv \
     --num-samples 999999 \
@@ -71,7 +80,7 @@ python train.py \
     --patience 20 \
     --batch-size 256 \
     --lr 1e-3 \
-    --no-cache 2>&1 | tee "${OUTDIR}/supervised.log"
+    --no-cache $TRAIN_FLAGS 2>&1 | tee "${OUTDIR}/supervised.log"
 
 # Copy supervised checkpoint
 cp best_model.pt "${OUTDIR}/best_model_supervised.pt"
