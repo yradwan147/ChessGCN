@@ -55,24 +55,56 @@ def get_device():
 # ── Replay Buffer ────────────────────────────────────────────────────────────
 
 class ReplayBuffer:
-    """Circular buffer of (graph, policy_target, value_target) training samples."""
+    """Circular buffer with optional sliding window and weighted replay.
 
-    def __init__(self, max_size=300_000):
+    Args:
+        max_size: Maximum buffer capacity.
+        window: If set, only sample from the last N iterations of data.
+        replay_decay: If set, weight samples by decay^(current_iter - sample_iter).
+                      1.0 = uniform, 0.9 = recent data 10x more likely than 10-iter-old data.
+    """
+
+    def __init__(self, max_size=300_000, window=None, replay_decay=None):
         self.buffer = deque(maxlen=max_size)
+        self.window = window
+        self.replay_decay = replay_decay
 
-    def add(self, graph, policy_target, value_target):
+    def add(self, graph, policy_target, value_target, iteration=0):
         entry = Data(
             x=graph.x,
             edge_index=graph.edge_index,
             edge_attr=graph.edge_attr,
             policy_target=policy_target,
             value_target=torch.tensor([value_target], dtype=torch.float),
+            iter_num=torch.tensor([iteration], dtype=torch.long),
         )
         self.buffer.append(entry)
 
-    def sample(self, batch_size):
-        indices = random.sample(range(len(self.buffer)), min(batch_size, len(self.buffer)))
-        return [self.buffer[i] for i in indices]
+    def sample(self, batch_size, current_iter=0):
+        candidates = list(self.buffer)
+
+        # Sliding window: only keep recent iterations
+        if self.window is not None and current_iter > 0:
+            min_iter = max(0, current_iter - self.window)
+            candidates = [e for e in candidates if e.iter_num.item() >= min_iter]
+            if not candidates:
+                candidates = list(self.buffer)  # fallback if window too aggressive
+
+        n = min(batch_size, len(candidates))
+
+        # Weighted replay: recent data sampled more often
+        if self.replay_decay is not None and self.replay_decay < 1.0 and current_iter > 0:
+            weights = []
+            for e in candidates:
+                age = current_iter - e.iter_num.item()
+                weights.append(self.replay_decay ** age)
+            total = sum(weights)
+            probs = [w / total for w in weights]
+            indices = np.random.choice(len(candidates), size=n, replace=False, p=probs)
+        else:
+            indices = random.sample(range(len(candidates)), n)
+
+        return [candidates[i] for i in indices]
 
     def __len__(self):
         return len(self.buffer)
@@ -183,7 +215,7 @@ def play_one_game(mcts_engine, max_moves=512, temp_threshold=30,
     return game_data, game_record, result
 
 
-def add_game_to_buffer(game_data, result, replay_buffer):
+def add_game_to_buffer(game_data, result, replay_buffer, iteration=0):
     """Convert a self-play game into training samples and add to buffer."""
     for fen, move_probs, side_to_move in game_data:
         graph = fen_to_graph(fen)
@@ -199,13 +231,13 @@ def add_game_to_buffer(game_data, result, replay_buffer):
         # Value from perspective of the side to move
         value = result if side_to_move == chess.WHITE else -result
 
-        replay_buffer.add(graph, policy_target, value)
+        replay_buffer.add(graph, policy_target, value, iteration=iteration)
 
 
 # ── Training on replay buffer ────────────────────────────────────────────────
 
 def train_on_buffer(model, replay_buffer, optimizer, device,
-                    batch_size=256, num_batches=200):
+                    batch_size=256, num_batches=200, current_iter=0):
     """Train with combined value + policy loss on replay buffer samples."""
     model.train()
     total_vloss, total_ploss, n = 0.0, 0.0, 0
@@ -213,7 +245,7 @@ def train_on_buffer(model, replay_buffer, optimizer, device,
     for _ in range(num_batches):
         if len(replay_buffer) < batch_size:
             break
-        samples = replay_buffer.sample(batch_size)
+        samples = replay_buffer.sample(batch_size, current_iter=current_iter)
         batch = Batch.from_data_list(samples).to(device)
         optimizer.zero_grad()
 
@@ -447,7 +479,11 @@ def selfplay_main(args, model=None):
 
     best_model = copy.deepcopy(model)
     best_model.eval()
-    replay_buffer = ReplayBuffer(max_size=args.buffer_size)
+    replay_buffer = ReplayBuffer(
+        max_size=args.buffer_size,
+        window=args.buffer_window,
+        replay_decay=args.replay_decay,
+    )
 
     # Optimizer with differential LR
     backbone_params = [p for n, p in model.named_parameters()
@@ -492,6 +528,8 @@ def selfplay_main(args, model=None):
     log.info(f"Self-play: {args.iterations} iterations, {args.games_per_iter} games/iter, "
              f"{args.simulations} MCTS sims/move")
 
+    consecutive_bad_evals = 0
+
     for iteration in range(1, args.iterations + 1):
         iter_start = time.time()
         log.info(f"\n{'='*60}")
@@ -518,7 +556,7 @@ def selfplay_main(args, model=None):
                 mcts_engine, max_moves=args.max_moves, resign_enabled=resign_on,
                 start_fen=start_fen,
             )
-            add_game_to_buffer(game_data, result, replay_buffer)
+            add_game_to_buffer(game_data, result, replay_buffer, iteration=iteration)
             positions_added += len(game_data)
 
             # Save game record to file
@@ -550,6 +588,7 @@ def selfplay_main(args, model=None):
         losses = train_on_buffer(
             model, replay_buffer, optimizer, device,
             batch_size=args.batch_size, num_batches=actual_steps,
+            current_iter=iteration,
         )
         log.info(f"  Training ({actual_steps} steps): value_loss={losses['value_loss']:.4f}, "
                  f"policy_loss={losses['policy_loss']:.4f}")
@@ -576,8 +615,17 @@ def selfplay_main(args, model=None):
                 best_model = copy.deepcopy(model)
                 best_model.eval()
                 torch.save(model.state_dict(), f"selfplay_best_iter{iteration}.pt")
+                consecutive_bad_evals = 0
+            elif args.restore_on_collapse and win_rate < 0.35:
+                consecutive_bad_evals += 1
+                log.info(f"  Low eval ({win_rate:.1%}), bad streak: {consecutive_bad_evals}")
+                if consecutive_bad_evals >= 2:
+                    log.info(f"  Collapse detected! Restoring best model weights.")
+                    model.load_state_dict(best_model.state_dict())
+                    consecutive_bad_evals = 0
             else:
                 log.info(f"  Keeping previous best model.")
+                consecutive_bad_evals = 0
 
         elapsed = time.time() - iter_start
         log.info(f"  Iteration time: {elapsed:.0f}s")
@@ -627,6 +675,14 @@ def main():
                         help="Use Gumbel MuZero MCTS instead of standard PUCT")
     parser.add_argument("--freeze-value", action="store_true",
                         help="Freeze value head during self-play (preserve supervised weights)")
+
+    # Anti-collapse
+    parser.add_argument("--buffer-window", type=int, default=None,
+                        help="Only sample from last N iterations of data (None = no window)")
+    parser.add_argument("--replay-decay", type=float, default=None,
+                        help="Exponential decay for replay weighting (e.g. 0.9). None = uniform.")
+    parser.add_argument("--restore-on-collapse", action="store_true",
+                        help="Restore best model weights if eval drops below 35%% twice")
 
     # Bootstrap
     parser.add_argument("--pretrain-policy", action="store_true",
