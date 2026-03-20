@@ -253,24 +253,23 @@ def main():
     project_dir = Path(__file__).parent
     device = get_device()
 
-    # Apply feature flags
+    # Apply feature flags to data module
     import data as data_module
-    if args.no_self_edges or args.no_check_feature:
-        _orig_ftg = data_module.fen_to_graph
-        se = not args.no_self_edges
-        cf = not args.no_check_feature
-        data_module.fen_to_graph = lambda fen, wdl=None, **kw: _orig_ftg(fen, wdl, self_edges=se, check_feature=cf)
+    se = not args.no_self_edges
+    cf = not args.no_check_feature
+    data_module.DEFAULT_SELF_EDGES = se
+    data_module.DEFAULT_CHECK_FEATURE = cf
     if args.wdl_k != 200.0:
         data_module.WDL_K = args.wdl_k
 
     # ── Data loading ──
     print(f"\nLoading dataset ({args.num_samples} samples)...")
+    print(f"  Features: self_edges={se}, check_feature={cf}, WDL_K={data_module.WDL_K}")
     csv_path = project_dir / args.data
     df = load_and_sample(csv_path, num_samples=args.num_samples)
     print(f"  Loaded {len(df)} positions")
 
-    cache_name = f"processed_graphs_{args.num_samples}.pt"
-    cache_path = None if args.no_cache else project_dir / cache_name
+    cache_path = None  # always rebuild with correct features (no cache)
 
     graphs = build_graphs(df, cache_path=cache_path)
     print(f"  {len(graphs)} graphs ready")

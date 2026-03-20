@@ -49,10 +49,14 @@ def cp_to_wdl(cp):
 
 EDGE_DIM = 11  # capture, promotion, castling, en_passant, dx, dy, promo_Q, promo_R, promo_B, promo_N, is_self_edge
 
+# Module-level defaults (can be overridden at runtime via CLI flags)
+DEFAULT_SELF_EDGES = True
+DEFAULT_CHECK_FEATURE = True
+
 PROMO_MAP = {chess.QUEEN: 0, chess.ROOK: 1, chess.BISHOP: 2, chess.KNIGHT: 3}
 
 
-def fen_to_graph(fen, wdl=None, self_edges=True, check_feature=True):
+def fen_to_graph(fen, wdl=None, self_edges=None, check_feature=None):
     """
     Convert a FEN string to a PyG Data object.
 
@@ -72,6 +76,11 @@ def fen_to_graph(fen, wdl=None, self_edges=True, check_feature=True):
       - promotion type one-hot (4d: queen, rook, bishop, knight)
       - is_self_edge (1d): 1.0 for self-loops, 0.0 for legal moves
     """
+    if self_edges is None:
+        self_edges = DEFAULT_SELF_EDGES
+    if check_feature is None:
+        check_feature = DEFAULT_CHECK_FEATURE
+
     board = chess.Board(fen)
 
     # --- Global features (broadcast to all 64 nodes) ---
@@ -212,7 +221,7 @@ def load_and_sample(csv_path, num_samples=None, random_state=42):
     return df
 
 
-def build_graphs(df, cache_path=None):
+def build_graphs(df, cache_path=None, self_edges=None, check_feature=None):
     """
     Convert DataFrame of positions to list of PyG Data objects.
     Uses cache if available.
@@ -228,7 +237,8 @@ def build_graphs(df, cache_path=None):
         cp = row["cp"]
         wdl = cp_to_wdl(cp)
         try:
-            graph = fen_to_graph(fen, wdl)
+            graph = fen_to_graph(fen, wdl, self_edges=self_edges,
+                                 check_feature=check_feature)
             graph.cp = torch.tensor([cp], dtype=torch.float)
             graphs.append(graph)
         except Exception as e:

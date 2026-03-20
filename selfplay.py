@@ -573,22 +573,14 @@ def selfplay_main(args, model=None):
     device = get_device()
     log.info(f"Device: {device}")
 
-    # Override data.py defaults based on CLI flags
+    # Override data.py module-level defaults based on CLI flags
     import data as data_module
-    if args.no_self_edges:
-        # Monkey-patch fen_to_graph to disable self-edges
-        _original_ftg = data_module.fen_to_graph
-        data_module.fen_to_graph = lambda fen, wdl=None, **kw: _original_ftg(
-            fen, wdl, self_edges=False, check_feature=not args.no_check_feature)
-        globals()['fen_to_graph'] = data_module.fen_to_graph
-    elif args.no_check_feature:
-        _original_ftg = data_module.fen_to_graph
-        data_module.fen_to_graph = lambda fen, wdl=None, **kw: _original_ftg(
-            fen, wdl, check_feature=False)
-        globals()['fen_to_graph'] = data_module.fen_to_graph
+    data_module.DEFAULT_SELF_EDGES = not args.no_self_edges
+    data_module.DEFAULT_CHECK_FEATURE = not args.no_check_feature
     if args.wdl_k != 200.0:
         data_module.WDL_K = args.wdl_k
-        log.info(f"WDL_K set to {args.wdl_k}")
+    log.info(f"Features: self_edges={data_module.DEFAULT_SELF_EDGES}, "
+             f"check={data_module.DEFAULT_CHECK_FEATURE}, WDL_K={data_module.WDL_K}")
 
     if model is None:
         node_dim = 21 if args.no_check_feature else 22
