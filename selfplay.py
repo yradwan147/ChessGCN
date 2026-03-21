@@ -573,12 +573,8 @@ def selfplay_main(args, model=None):
     device = get_device()
     log.info(f"Device: {device}")
 
-    # Override data.py module-level defaults based on CLI flags
+    # Log data module settings (set in main() before this function)
     import data as data_module
-    data_module.DEFAULT_SELF_EDGES = not args.no_self_edges
-    data_module.DEFAULT_CHECK_FEATURE = not args.no_check_feature
-    if args.wdl_k != 200.0:
-        data_module.WDL_K = args.wdl_k
     log.info(f"Features: self_edges={data_module.DEFAULT_SELF_EDGES}, "
              f"check={data_module.DEFAULT_CHECK_FEATURE}, WDL_K={data_module.WDL_K}")
 
@@ -894,6 +890,13 @@ def main():
 
     args = parser.parse_args()
     device = get_device()
+
+    # Set data module defaults BEFORE any graph building happens
+    import data as data_module
+    data_module.DEFAULT_SELF_EDGES = not args.no_self_edges
+    data_module.DEFAULT_CHECK_FEATURE = not args.no_check_feature
+    if args.wdl_k != 200.0:
+        data_module.WDL_K = args.wdl_k
 
     model = None
     if args.pretrain_policy:
