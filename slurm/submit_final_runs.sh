@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Final Best-Model Runs — 6 experiments, 80 iterations each
+# Final Best-Model Runs — 4 experiments, 80 iterations each
 # ============================================================
 #
 # Based on 50+ prior experiments. Features selected for no interference:
@@ -30,7 +30,7 @@ BASE="--freeze-value --iterations 80 --eval-interval 5 --gate-threshold 0.52 --b
 OLD="--no-self-edges --no-check-feature --wdl-k 111"
 
 echo "============================================================"
-echo "Final Best-Model Runs (6 runs, 80 iters)"
+echo "Final Best-Model Runs (4 runs, 80 iters)"
 echo "============================================================"
 echo ""
 
@@ -58,49 +58,29 @@ sbatch --time=30:00:00 -J f4_full slurm/run_experiment.sh f4_full $H $HEADS $BLK
     $BASE --wdl-k 111 --moves-left-head --color-flip
 COUNT=$((COUNT + 1))
 
-# ── f5: Big dataset + top 2 ──
-echo "  f5: Big dataset (1M) + check + moves-left"
-sbatch --time=48:00:00 -J f5_bigdata slurm/run_experiment.sh f5_bigdata $H $HEADS $BLK $SIMS 3 \
-    $BASE --no-self-edges --wdl-k 111 --moves-left-head --pretrain-data big_dataset.csv
-COUNT=$((COUNT + 1))
-
-# ── f6: Big dataset + full features ──
-echo "  f6: Big dataset (1M) + all features"
-sbatch --time=48:00:00 -J f6_bigdata_full slurm/run_experiment.sh f6_bigdata_full $H $HEADS $BLK $SIMS 3 \
-    $BASE --wdl-k 111 --moves-left-head --color-flip --pretrain-data big_dataset.csv
-COUNT=$((COUNT + 1))
-
 echo ""
 echo "============================================================"
 echo "Submitted $COUNT final runs"
 echo "============================================================"
 echo ""
-echo "  f1_control      — Prior best, no research features (baseline)"
-echo "  f2_check_ml     — Check + moves-left (top 2 winners)"
-echo "  f3_safe         — Check + self-edges + moves-left"
-echo "  f4_full         — Check + self-edges + moves-left + color flip"
-echo "  f5_bigdata      — 1M dataset + check + moves-left"
-echo "  f6_bigdata_full — 1M dataset + all features"
+echo "  f1_control  — Prior best, no research features (baseline)"
+echo "  f2_check_ml — Check + moves-left (top 2 winners)"
+echo "  f3_safe     — Check + self-edges + moves-left"
+echo "  f4_full     — Check + self-edges + moves-left + color flip"
 echo ""
 echo "Comparisons:"
 echo "  f1 vs f2: Do top 2 winners stack?"
 echo "  f2 vs f3: Does adding self-edges help or interfere?"
 echo "  f3 vs f4: Does color flip add value on top?"
-echo "  f2 vs f5: Does 20x more supervised data improve foundation?"
-echo "  f4 vs f6: Does bigger data + all features = best model?"
-echo ""
-echo "Expected: f5 or f6 should be the best model."
 echo ""
 echo "Estimated times (based on actual GTX 1080 Ti measurements):"
 echo "  f1: ~13h  (no self-edges, fast iters)"
 echo "  f2: ~14h  (check+ml, no self-edges)"
-echo "  f3: ~19h  (self-edges = 4x graph → slower iters)"
+echo "  f3: ~19h  (self-edges = 4x graph, slower iters)"
 echo "  f4: ~19h  (same as f3 + color flip overhead)"
-echo "  f5: ~16h  (1M dataset adds ~2.5h supervised)"
-echo "  f6: ~21h  (1M + self-edges, slowest run)"
 echo ""
 echo "Monitor:"
-echo "  for d in results/f[1-6]_*/; do"
+echo "  for d in results/f[1-4]_*/; do"
 echo "    name=\$(basename \"\$d\")"
 echo "    gates=\$(grep -c 'New best' \"\${d}selfplay.log\" 2>/dev/null || echo 0)"
 echo "    eval=\$(grep 'Challenger' \"\${d}selfplay.log\" 2>/dev/null | tail -1 | grep -o '[0-9.]*%')"
