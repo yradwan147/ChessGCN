@@ -43,6 +43,8 @@ mkdir -p "$WORKDIR" "$OUTDIR"
 # ── Set up isolated workdir (symlinks to save disk, copies only .py) ──
 cp "${PROJECT_DIR}"/*.py "$WORKDIR/"
 ln -sf "${PROJECT_DIR}/dataset_eval.csv" "$WORKDIR/dataset_eval.csv"
+# Symlink big dataset if it exists
+[ -f "${PROJECT_DIR}/big_dataset.csv" ] && ln -sf "${PROJECT_DIR}/big_dataset.csv" "$WORKDIR/big_dataset.csv"
 # Copy opening book if it exists
 [ -f "${PROJECT_DIR}/openings.txt" ] && cp "${PROJECT_DIR}/openings.txt" "$WORKDIR/"
 cd "$WORKDIR"
@@ -65,13 +67,17 @@ echo "$EXTRA_FLAGS" | grep -q "\-\-no-check-feature" && TRAIN_FLAGS="$TRAIN_FLAG
 # Extract --wdl-k value if present
 WDL_K_VAL=$(echo "$EXTRA_FLAGS" | grep -oP '(?<=--wdl-k )\S+' || true)
 [ -n "$WDL_K_VAL" ] && TRAIN_FLAGS="$TRAIN_FLAGS --wdl-k $WDL_K_VAL"
+# Extract --pretrain-data if present (for big dataset)
+DATA_FILE="dataset_eval.csv"
+PRETRAIN_DATA=$(echo "$EXTRA_FLAGS" | grep -oP '(?<=--pretrain-data )\S+' || true)
+[ -n "$PRETRAIN_DATA" ] && DATA_FILE="$PRETRAIN_DATA"
 
 # ── Phase 1: Supervised training ──
 echo ""
-echo "[PHASE 1] Supervised training..."
+echo "[PHASE 1] Supervised training on ${DATA_FILE}..."
 echo "  Train flags: ${TRAIN_FLAGS:-none}"
 python train.py \
-    --data dataset_eval.csv \
+    --data "$DATA_FILE" \
     --num-samples 999999 \
     --hidden "$HIDDEN" \
     --heads "$HEADS" \
