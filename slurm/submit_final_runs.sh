@@ -48,13 +48,13 @@ COUNT=$((COUNT + 1))
 
 # ── f3: Top 3 (check + self-edges + moves-left) ──
 echo "  f3: Check + self-edges + moves-left"
-sbatch --time=36:00:00 -J f3_safe slurm/run_experiment.sh f3_safe $H $HEADS $BLK $SIMS 3 \
+sbatch --time=30:00:00 -J f3_safe slurm/run_experiment.sh f3_safe $H $HEADS $BLK $SIMS 3 \
     $BASE --wdl-k 111 --moves-left-head
 COUNT=$((COUNT + 1))
 
 # ── f4: Top 4 (check + self-edges + moves-left + color flip) ──
 echo "  f4: Full feature set (check + self-edges + moves-left + flip)"
-sbatch --time=36:00:00 -J f4_full slurm/run_experiment.sh f4_full $H $HEADS $BLK $SIMS 3 \
+sbatch --time=30:00:00 -J f4_full slurm/run_experiment.sh f4_full $H $HEADS $BLK $SIMS 3 \
     $BASE --wdl-k 111 --moves-left-head --color-flip
 COUNT=$((COUNT + 1))
 
@@ -91,9 +91,13 @@ echo "  f4 vs f6: Does bigger data + all features = best model?"
 echo ""
 echo "Expected: f5 or f6 should be the best model."
 echo ""
-echo "Estimated times:"
-echo "  f1-f4: ~10h (1h supervised + 8h self-play)"
-echo "  f5-f6: ~14h (5h supervised on 1M + 8h self-play)"
+echo "Estimated times (based on actual GTX 1080 Ti measurements):"
+echo "  f1: ~13h  (no self-edges, fast iters)"
+echo "  f2: ~14h  (check+ml, no self-edges)"
+echo "  f3: ~19h  (self-edges = 4x graph → slower iters)"
+echo "  f4: ~19h  (same as f3 + color flip overhead)"
+echo "  f5: ~16h  (1M dataset adds ~2.5h supervised)"
+echo "  f6: ~21h  (1M + self-edges, slowest run)"
 echo ""
 echo "Monitor:"
 echo "  for d in results/f[1-6]_*/; do"
