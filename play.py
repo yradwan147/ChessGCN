@@ -331,6 +331,7 @@ body {
                 <button class="btn-white" onclick="newGame('white')">Play White</button>
                 <button class="btn-black" onclick="newGame('black')">Play Black</button>
                 <button class="btn-auto" onclick="newGame('auto')">Auto-Play</button>
+                <button class="btn-auto" onclick="restart()" style="background:#c62828;color:#fff;">Restart</button>
             </div>
         </div>
         <div class="panel">
@@ -444,6 +445,12 @@ function stopAutoPlay() {
         clearInterval(autoPlayTimer);
         autoPlayTimer = null;
     }
+}
+
+function restart() {
+    stopAutoPlay();
+    let color = isAutoPlay ? 'auto' : playerColor;
+    newGame(color);
 }
 
 function updateUI(data) {
