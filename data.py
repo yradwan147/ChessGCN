@@ -147,15 +147,17 @@ def fen_to_graph(fen, wdl=None, self_edges=None, check_feature=None):
         if move.promotion is not None:
             promo[PROMO_MAP[move.promotion]] = 1.0
 
-        edge_attrs.append([
+        edge_feat = [
             float(board.is_capture(move)),
             float(move.promotion is not None),
             float(board.is_castling(move)),
             float(board.is_en_passant(move)),
             dx, dy,
             *promo,
-            0.0,  # is_self_edge = False
-        ])
+        ]
+        if self_edges:
+            edge_feat.append(0.0)  # is_self_edge = False
+        edge_attrs.append(edge_feat)
 
     # --- Add self-edges (64 self-loops, one per square) ---
     if self_edges:
@@ -165,9 +167,10 @@ def fen_to_graph(fen, wdl=None, self_edges=None, check_feature=None):
             edge_attrs.append([0.0] * 10 + [1.0])  # all zeros + self-edge flag
 
     # Handle positions with no edges at all
+    actual_edge_dim = 11 if self_edges else 10
     if len(src) == 0:
         edge_index = torch.zeros((2, 0), dtype=torch.long)
-        edge_attr = torch.zeros((0, EDGE_DIM), dtype=torch.float)
+        edge_attr = torch.zeros((0, actual_edge_dim), dtype=torch.float)
     else:
         edge_index = torch.tensor([src, dst], dtype=torch.long)
         edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
