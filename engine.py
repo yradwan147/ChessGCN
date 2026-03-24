@@ -121,14 +121,25 @@ def load_model(checkpoint_path, device=None, hidden=None, heads=None, num_blocks
     # Detect node_dim from input projection
     node_dim = state_dict["input_proj.0.weight"].shape[1] if "input_proj.0.weight" in state_dict else 22
 
+    # Detect edge_dim from GATv2Conv edge projection
+    edge_key = "blocks.0.conv1.lin_edge.weight"
+    edge_dim = state_dict[edge_key].shape[1] if edge_key in state_dict else 11
+
+    # Set data module defaults to match checkpoint (self-edges if edge_dim=11, check if node_dim=22)
+    import data as data_module
+    data_module.DEFAULT_SELF_EDGES = (edge_dim == 11)
+    data_module.DEFAULT_CHECK_FEATURE = (node_dim == 22)
+
     model = ChessGATv2(
-        node_dim=node_dim, hidden=hidden, heads=heads, num_blocks=num_blocks,
+        node_dim=node_dim, edge_dim=edge_dim,
+        hidden=hidden, heads=heads, num_blocks=num_blocks,
         policy_head=has_policy, attn_pool=has_attn_pool,
         moves_left_head=has_moves_left, score_dist_bins=score_dist_bins,
     ).to(device)
     model.load_state_dict(state_dict, strict=False)
     model.eval()
     print(f"  Architecture: hidden={hidden}, heads={heads}, blocks={num_blocks}, "
+          f"edge_dim={edge_dim}, node_dim={node_dim}, "
           f"policy={'yes' if has_policy else 'no'}, attn_pool={has_attn_pool}, "
           f"moves_left={has_moves_left}, score_bins={score_dist_bins}")
     return model, device
